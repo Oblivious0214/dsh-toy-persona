@@ -27,8 +27,8 @@ DeepSeek Harness 的人设切换插件：把一个角色的**人设与语言风�
 - 💾 **重启后依然在**：本会话选过的角色记在 `$DSH_HOME/persona-switcher/sessions.json`，
   DSH 完全重启后该会话的**第一步**就是这个人设（角色在 agent 创建事务里就装好，不必等到第二步）；
   卸载插件或删掉该文件即彻底忘记。
-- 🖥️ **设置页**：设置 → **人设切换**，可视化管理角色库（新建 / 编辑 / 删除 / 设为默认）。
-- 🧭 **专属导航图标**：设置页左栏里它有自己的面具图标，不是又一枚齿轮。
+- 🖥️ **设置页**：设置 → **人设切换**，可视化管理角色库（新建 / 编辑 / 删除）、改新会话的默认角色。
+- 🧭 **专属导航图标**：设置页左栏里它带着自己的面具图标。
 - 🔍 **`role_probe` 诊断工具**：一条命令看清当前绑定、系统节点、工具清单（可关闭）。
 - 🔒 **只动该动的**：不声明任何角色级工具、技能或模型——切换人设不会顺带放权。
 
@@ -67,9 +67,9 @@ DeepSeek Harness 的人设切换插件：把一个角色的**人设与语言风�
 
 ### 只在内存里、不落盘的东西
 
-- 一条角色库 prompt section（`persona-switcher.catalogue`）+ 每会话一条 agent 作用域的人设 section；
+- 一条角色库 prompt section（`persona-switcher:catalogue`，顺带把可用角色清单列进系统提示词）+ 每会话一条 agent 作用域的人设 section；
 - 一条 `/role` 斜杠命令；`exposeTool: true` 时一个 `role_probe` 工具；
-- 浏览器侧：一个设置页 section（id 固定 `persona-switcher`，左栏第 4 项）+ 若干 `ps-` 前缀样式（锚定在 `.dsh-panel.ps-page`，不污染宿主 UI）；
+- 浏览器侧：一个设置页 section（id 固定 `persona-switcher`，注册在 `settings.section` 槽位、`order: 15`）+ 若干 `ps-` 前缀样式（锚定在 `.dsh-panel.ps-page`，不污染宿主 UI）；
 - `announceRoleChange: true`（默认）时，切换后往该会话注入一条 `<system-reminder>Role change: …` 用户消息——它是**真实会话消息**，所以会出现在该会话的记录里，这是刻意的（见「配置项」）。**每一次人设变更都会发**：角色 → 角色、部署人设 → 角色、角色 → `/role none` 回到部署人设、以及被记住的角色从库里消失后改由别的角色接手，四种方向各有一条对应的声明；只有「本会话原本就是这个角色」的自动恢复保持安静，因为那不是变更（见「配置项」）。
 
 ### 网络
@@ -206,7 +206,7 @@ description: 温柔高效的鲸御姐，本鲸自称
 
 | 字段 | 必填 | 说明 |
 | --- | --- | --- |
-| `id` | 建议 | 角色 id；缺省时用地名（目录名 / 文件名）。只允许 `[a-z0-9][a-z0-9-]*` |
+| `id` | 建议 | 角色 id；缺省时用目录名 / 文件名。只允许 `[a-z0-9][a-z0-9-]*` |
 | `name` | 否 | 展示名，设置页与 `/role` 清单里显示 |
 | `description` | 否 | 一句话说明 |
 | （正文） | **是** | frontmatter 之后的内容即人设文本 |
@@ -219,12 +219,20 @@ description: 温柔高效的鲸御姐，本鲸自称
 
 ## 设置页
 
-**设置 → 人设切换**（左栏第 4 项，面具图标）提供：
+**设置 → 人设切换**（左栏里带面具图标的那一项）分两个标签页：
 
-- 角色库列表，标记当前默认角色；
-- **新建 / 编辑 / 删除**角色文件；
-- 直接切换新会话的默认人设；
-- 开关 `role_probe` 诊断工具。
+**常规**
+
+- 改新会话的默认角色（`defaultRole` 输入框，留空即回到部署默认；改完保存会写进 profile 配置）；
+- 开关 `role_probe` 诊断工具（`exposeTool`）。
+
+**角色库**
+
+- 角色列表（每条显示名称、id、描述；页面标题旁标着角色数）；
+- **新建 / 编辑 / 删除**角色文件，删除有二次确认；
+- 当前**默认角色**的具体值在「常规」页的输入框里看（列表本身不打标记）。
+
+> 会话中途切人设只有 `/role` 一条路：浏览器侧只做角色库的增删改，不碰任何会话。
 
 这些操作走宿主本机服务上的 `/persona-switcher` 路由（与 DSH 桌面端同样只监听
 `127.0.0.1`，不对外暴露）；角色内容只存在你自己的磁盘上，插件不联网上传任何东西。
@@ -282,8 +290,11 @@ section 在作用域内覆盖部署全局的那一份，只影响这一个会话
 npm install
 npm run build      # 构建 lib/client.js（esbuild，产物入仓库）
 npm run verify     # 检查不变量：bundle id、patch 行、发布配置、不许出现 recompose
-npm test           # 无网络测试：bundle 模拟 + persona 绑定不变量 + 会话状态持久化 + 创建期绑定（重启后第一步即生效）
+npm test           # 无网络测试：bundle 模拟 + 宿主绑定不变量 + persona 绑定不变量 + 会话状态持久化 + 创建期绑定（重启后第一步即生效）+ role-change 声明
 ```
+
+（`npm test` 实际串起 5 个脚本：`simulate-client`、`verify-host-binding`、`verify-session-state`、
+`verify-created-bind`、`verify-role-notice`；`prepublishOnly` 会把它们全跑一遍。）
 
 改完 `src/client/index.jsx` **必须重新 `npm run build` 并提交 `lib/client.js`**：
 CI 会重建产物并逐字节比对（`git diff --exit-code -- lib/client.js`），产物过期 CI 会失败。
@@ -355,9 +366,12 @@ Then, inside a session:
 /role default whale-girl   make it the default for new sessions
 ```
 
-There is also a **Settings → Persona Switcher** page (list / create / edit / delete roles, set the
-default, toggle the `role_probe` diagnostic tool). Roles are plain Markdown on your disk; the plugin
-never uploads anything and never changes which tools the model can call.
+There is also a **Settings → Persona Switcher** page, in two tabs: **General** (edit the
+`defaultRole` used by new sessions, toggle the `role_probe` diagnostic tool) and **Role library**
+(list / create / edit / delete role files, with a delete confirmation). Its left-nav entry gets its
+own mask icon. Roles are plain Markdown on your disk; the plugin never uploads anything, never
+touches any session from the browser side, and never changes which tools the model can call.
+Switching a live session is `/role`'s job.
 
 A role is applied as a `deployment:persona-prefix` prompt section registered in that session's own
 scope, which shadows the deployment persona for that session alone — the same mechanism the bundled
