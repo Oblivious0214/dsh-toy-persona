@@ -12,11 +12,16 @@
  *   2. The host row must have exactly one source: this package's own
  *      `dsh.bundle.patch`. Two active loader sources resolving to the same
  *      package name fail to compose.
- *   3. The persona route must stay a per-agent prompt section. Recomposing an
- *      agent preset replaces the agent's whole plugin composition, so the
- *      session loses its tools and commands along with the old identity
- *      (measured while switching: 33 model-facing tools and 10 commands became
- *      7 and 7). This rule keeps that defect from returning through a refactor.
+ *   3. The persona route must stay a per-agent prompt section of this plugin's
+ *      own, placed after the deployment persona prefix instead of replacing it.
+ *      Recomposing an agent preset replaces the agent's whole plugin
+ *      composition, so the session loses its tools and commands along with the
+ *      old identity (measured while switching: 33 model-facing tools and 10
+ *      commands became 7 and 7) — and re-registering the deployment persona
+ *      prefix deletes its identity line (`You are a coding agent powered by the
+ *      {{model}} model.`) from the system prompt, leaving the model unable to
+ *      name the model it runs on. This rule keeps both defects from returning
+ *      through a refactor.
  *   4. A switch must be durable. The binding lives in one agent scope and dies
  *      with it, so the choice is mirrored into `lib/session-state.js`'s file and
  *      re-applied on the session's pre-step. Both halves must stay wired.
@@ -132,20 +137,53 @@ if (host !== null) {
 
 const binder = await read('lib/persona-binding.js')
 if (binder !== null) {
-  for (const needle of ['deployment:persona-prefix', 'DEPLOYMENT_PERSONA_PREFIX']) {
-    if (!binder.includes(needle)) {
-      problems.push(
-        `lib/persona-binding.js does not mention ${needle}: the per-agent override must register ` +
-          'the same section name and order the global deployment persona uses (hard rule 3)'
-      )
-    }
+  // These checks are about code, not prose: the module's header comment names
+  // both the deployment section (to say it is never registered from here) and
+  // the section-order API (to say it is not consulted), so block comments are
+  // stripped before anything is matched.
+  const binderCode = binder.replace(/\/\*[\s\S]*?\*\//g, '')
+  const sectionName = /export const PERSONA_SECTION = '([^']+)'/.exec(binderCode)?.[1]
+  if (sectionName === undefined) {
+    problems.push('lib/persona-binding.js does not export PERSONA_SECTION as a single-quoted literal (hard rule 3)')
+  } else if (sectionName === 'deployment:persona-prefix') {
+    problems.push(
+      'lib/persona-binding.js registers the deployment persona prefix itself: that scoped registration ' +
+        'shadows it and deletes the harness identity line from the system prompt (hard rule 3) — register ' +
+        "this plugin's own section beside it instead"
+    )
+  } else if (sectionName !== 'persona-switcher:persona') {
+    problems.push(
+      `lib/persona-binding.js registers prompt section ${JSON.stringify(sectionName)}, expected ` +
+        '"persona-switcher:persona" (hard rule 3)'
+    )
   }
-  if (!binder.includes('prompt.section(')) {
+  const order = /export const PERSONA_ORDER = (\d+)/.exec(binderCode)?.[1]
+  if (order === undefined) {
+    problems.push(
+      'lib/persona-binding.js does not export PERSONA_ORDER as a number literal (hard rule 3): the placement ' +
+        'is a raw order value, because this section has no name in the harness section-order table'
+    )
+  } else if (Number(order) <= 0 || Number(order) >= 500) {
+    problems.push(
+      `lib/persona-binding.js places the role section at ${order}: it must come after the deployment persona ` +
+        'prefix (0) and before the first-party guidance (PLAN_POLICY, 500) (hard rule 3)'
+    )
+  }
+  if (/getSectionOrder\s*\(/.test(binderCode)) {
+    problems.push(
+      'lib/persona-binding.js consults the section-order table (getSectionOrder); this section has no name ' +
+        'in it (hard rule 3)'
+    )
+  }
+  if (!binderCode.includes('prompt.section(')) {
     problems.push('lib/persona-binding.js does not register a prompt section (hard rule 3)')
   }
 }
 if (problems.length === 0 && host !== null && binder !== null) {
-  notes.push('roles are bound as a per-agent prompt section; the agent preset is never recomposed')
+  notes.push(
+    'roles are bound as a per-agent prompt section beside the deployment persona prefix, which is never ' +
+      'shadowed; the agent preset is never recomposed'
+  )
 }
 
 // ---------------------------------------------------------------- rule 4

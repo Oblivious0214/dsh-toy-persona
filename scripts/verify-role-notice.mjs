@@ -31,8 +31,11 @@ import { createSessionState } from '../lib/session-state.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const libDir = join(here, '..', 'lib')
-/** The section a role's persona registers. */
-const PERSONA_SECTION = 'deployment:persona-prefix'
+/** The section a role's persona registers: this plugin's own, NOT the deployment's
+ * `deployment:persona-prefix`, which must stay in force beside it. */
+const PERSONA_SECTION = 'persona-switcher:persona'
+/** The section's placement: after the deployment persona prefix (0), before PLAN_POLICY (500). */
+const PERSONA_ORDER = 137
 /** The message-source form the injected notice carries. */
 const NOTICE_FORM = 'role-change'
 const ROLE_ID = 'whale-girl'
@@ -85,7 +88,8 @@ const scopedPrompt = () => {
     sections,
     registered,
     section(input) {
-      assert.equal(input.name, PERSONA_SECTION, 'a role must register the deployment persona section name')
+      assert.equal(input.name, PERSONA_SECTION, "a role must register this plugin's own section name")
+      assert.equal(input.order, PERSONA_ORDER, 'a role must place its section at the order this plugin owns')
       if (sections.has(input.name)) {
         throw new Error(`prompt section "${input.name}" is already registered in this scope`)
       }

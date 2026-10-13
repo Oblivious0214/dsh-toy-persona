@@ -12,16 +12,19 @@ DeepSeek Harness 的人设切换插件：把一个角色的**人设与语言风�
 > Mid-session **persona-only** switching for DeepSeek Harness: swap the model's identity and
 > speaking style without touching its tools, skills, or model selection.
 
-![人设怎么进入提示词：/role → sessions.json → agent/created 绑定 → deployment:persona-prefix prompt section](docs/how-it-works.svg)
+![人设怎么进入提示词：/role → sessions.json → agent/created 绑定 → persona-switcher:persona prompt section](docs/how-it-works.svg)
 
 ## 它能做什么
 
 - 🎭 **角色库**：`rolesDir` 下每个角色一个 `ROLE.md`（`id` / `name` / `description` + 人设正文）。
 - 🔄 **会话中途切换**：`/role <id>` 立即生效，下一步就是新的人设。
-- 🪄 **走宿主原生人设机制**：把角色正文注册为该 agent 作用域下的 `deployment:persona-prefix`
-  prompt section（与内置 `dsh-subagent` 给子 agent 装人设是同一条路），不是拼接字符串，
-  也不改会话的插件组合。
-- ↩️ **可随时退回**：`/role none` 撤销本会话的角色，回到部署默认人设——即使配置了
+- 🪄 **走宿主原生人设机制**：把角色正文注册为该 agent 作用域下的独立 prompt section
+  `persona-switcher:persona`（排在部署人设前缀之后，与内置 `dsh-subagent` 给子 agent 装人设
+  是同一条路），不是拼接字符串，也不改会话的插件组合。
+- 🧬 **不动宿主的身份行**：部署 persona 前缀 `You are a coding agent powered by the {{model}} model.`
+  由宿主自己注册，本插件**永不遮蔽**它——切角色是**加一段人设**，不是换掉身份，所以模型始终
+  知道自己跑在哪个模型上。
+- ↩️ **可随时退回**：`/role none` 撤销本会话的角色（人设为空，宿主的身份行照旧）——即使配置了
   `defaultRole`，它也不会被重新装回来，重启后依然保持。
 - ✅ **默认角色**：`defaultRole` 让新会话自动上身，无需每次手动切。
 - 💾 **重启后依然在**：本会话选过的角色记在 `$DSH_HOME/persona-switcher/sessions.json`，
@@ -38,6 +41,7 @@ DeepSeek Harness 的人设切换插件：把一个角色的**人设与语言风�
 | --- | --- |
 | 不改工具集 / 技能 / 模型 | 「人设是说话的人，能力是手里的工具」——本插件只换前者 |
 | 不注册 agent preset，也不 `recompose` 会话 | 换 preset 会重绑整个 agent 插件组合，工具与命令会一起被换掉（实测 33 个工具掉到 7、10 条命令掉到 7），正是本插件要避免的事 |
+| 不遮蔽宿主的 persona 前缀 | 那是部署写的身份行（`You are a coding agent powered by the {{model}} model.`）——覆盖它模型就不知道自己跑在哪个模型上；角色以独立 section 加在它后面 |
 | 不提供自主切换工具（`switch_to_role` 之类） | 切换只经 `/role` 命令，避免模型自己改人设 |
 | 不读角色级 `tools` / `denyTools` / `skillsDir` / `model` 字段 | 这些字段即使写了也一律忽略，行为可预测 |
 
@@ -271,11 +275,13 @@ system 节点清单（seq + 字符数 + surfaceOp）、上一次请求头发给�
 
 ## 工作原理（一句话）
 
-角色正文被注册成**该 agent 作用域**下的 `deployment:persona-prefix` prompt section：同名
-section 在作用域内覆盖部署全局的那一份，只影响这一个会话；prompt registry 每一步重新组装
-系统节点并发出 `system-prompt/change`，所以下一步就是新的人设、旧人设文本被替换而不是堆叠。
-整条路径只碰 prompt 输入，会话的插件组合、工具、命令、技能、模型一概不动。浏览器侧只做
-两件事：注入设置页 section，以及给左栏换上自己的图标。
+角色正文被注册成**该 agent 作用域**下的独立 prompt section `persona-switcher:persona`（order
+137，紧跟在部署 persona 前缀 `deployment:persona-prefix`（order 0）之后），只影响这一个会话；
+部署那份前缀（`You are a coding agent powered by the {{model}} model.`）原封不动地留在提示词里。
+prompt registry 每一步重新组装系统节点并发出 `system-prompt/change`，所以下一步就是新的人设、
+旧人设文本被替换而不是堆叠；`/role none` 只是把这个人设段撤掉（人设为空），身份行不受影响。
+整条路径只碰 prompt 输入，会话的插件组合、工具、命令、技能、模型一概不动。浏览器侧只做两件事：
+注入设置页 section，以及给左栏换上自己的图标。
 
 ## 兼容性
 
@@ -289,7 +295,7 @@ section 在作用域内覆盖部署全局的那一份，只影响这一个会话
 ```bash
 npm install
 npm run build      # 构建 lib/client.js（esbuild，产物入仓库）
-npm run verify     # 检查不变量：bundle id、patch 行、发布配置、不许出现 recompose
+npm run verify     # 检查不变量：bundle id、patch 行、发布配置、不许出现 recompose、不许遮蔽部署人设前缀
 npm test           # 无网络测试：bundle 模拟 + 宿主绑定不变量 + persona 绑定不变量 + 会话状态持久化 + 创建期绑定（重启后第一步即生效）+ role-change 声明
 ```
 
@@ -362,7 +368,7 @@ Then, inside a session:
 ```text
 /role                      show this session's role and the role list
 /role whale-girl           switch this session to that persona
-/role none                 drop the role and go back to the deployment persona
+/role none                 drop the role: the persona goes back to empty
 /role default whale-girl   make it the default for new sessions
 ```
 
@@ -373,11 +379,14 @@ own mask icon. Roles are plain Markdown on your disk; the plugin never uploads a
 touches any session from the browser side, and never changes which tools the model can call.
 Switching a live session is `/role`'s job.
 
-A role is applied as a `deployment:persona-prefix` prompt section registered in that session's own
-scope, which shadows the deployment persona for that session alone — the same mechanism the bundled
-`dsh-subagent` uses to give a child agent its persona. Nothing about the session's plugin
-composition, tools, commands, skills or model is touched, and `npm run verify` fails the build if a
-preset recomposition ever comes back.
+A role is applied as a prompt section of this plugin's own — `persona-switcher:persona`, placed right
+after the deployment persona prefix (order 0) and registered in that session's own scope — the same
+mechanism the bundled `dsh-subagent` uses to give a child agent its persona. The deployment's own
+prefix (`You are a coding agent powered by the {{model}} model.`) is never shadowed, so a switch adds
+persona prose beside the identity line instead of replacing it, and `/role none` leaves the persona
+empty rather than the identity. Nothing about the session's plugin composition, tools, commands,
+skills or model is touched, and `npm run verify` fails the build if a preset recomposition — or a
+scoped re-registration of the deployment's own section — ever comes back.
 
 A switch is also written to `$DSH_HOME/persona-switcher/sessions.json`, so a session keeps its
 persona across a full DSH restart — it is re-applied while the agent is being created, so it is in

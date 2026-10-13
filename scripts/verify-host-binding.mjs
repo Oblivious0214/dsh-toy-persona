@@ -4,15 +4,21 @@
  *
  * Run with `npm test` (CI runs the same on every push and PR).
  *
- * A role is applied by registering the deployment persona prefix section —
- * same name, same order — through the *agent's own* prompt registry, which
- * shadows the global deployment persona for that one session and changes
- * nothing else. The properties that matter cannot be checked by reading the
- * source, so they are checked here against fake registries:
+ * A role is applied as this plugin's own prompt section — `persona-switcher:persona`,
+ * placed right after the deployment persona prefix — registered through the
+ * *agent's own* prompt registry. The fake registries below are seeded with the
+ * deployment's own persona prefix exactly as the harness's global registration
+ * leaves it, and they refuse a second registration of one name, so a role that
+ * re-registered that section — the shadowing this plugin used to do, which
+ * deleted `You are a coding agent powered by the {{model}} model.` from the
+ * system prompt — fails here instead of shipping. The properties that matter
+ * cannot be checked by reading the source, so they are checked here against fake
+ * registries:
  *
  *   - registration is routed through the agent's registry, not a global one;
- *     the fake host registry throws exactly like the real one does when a
- *     section name is already registered globally;
+ *   - the deployment persona prefix survives every switch, the role section is
+ *     placed at this plugin's own order, and the section-order table is never
+ *     consulted (this placement has no name in it);
  *   - replacing a role disposes the superseded registration first, because one
  *     scope refuses a duplicate name: switching twice must neither throw nor
  *     leave two personas in the prompt;
@@ -26,18 +32,38 @@
 import assert from 'node:assert/strict'
 import { PERSONA_ORDER, PERSONA_SECTION, createPersonaBindings } from '../lib/persona-binding.js'
 
+/** The harness's own persona prefix, as the deployment registers it (order 0). */
+const DEPLOYMENT_SECTION = 'deployment:persona-prefix'
+const DEPLOYMENT_PREFIX = 'You are a coding agent powered by the ecnu-max model.'
+
 const ROLE_A = { id: 'whale-girl', name: '鲸鱼娘', description: '', persona: '你是DeepSeek鲸鱼娘，温柔高效。' }
 const ROLE_B = { id: 'plain', name: 'Plain', description: '', persona: 'You are a plain assistant.' }
 
-/** A stand-in for one agent-scoped prompt registry. */
+/**
+ * A stand-in for one agent-scoped prompt registry, seeded with the deployment
+ * persona prefix the harness keeps in its global registry.
+ */
 const scopedPrompt = () => {
-  const sections = new Map()
+  const sections = new Map([[DEPLOYMENT_SECTION, DEPLOYMENT_PREFIX]])
+  const orders = new Map([[DEPLOYMENT_SECTION, 0]])
   const registered = []
+  let orderLookups = 0
   let refuse = null
   let refusals = 0
   return {
     sections,
     registered,
+    /** How often the section-order table was consulted — must stay at zero. */
+    get orderLookups() {
+      return orderLookups
+    },
+    /** What the model would read: every section, in prompt order. */
+    render() {
+      return [...sections.keys()]
+        .sort((a, b) => (orders.get(a) ?? 0) - (orders.get(b) ?? 0))
+        .map((name) => sections.get(name))
+        .join('\n')
+    },
     /**
      * Make the next `times` calls to `section()` fail, like a registry that
      * refuses (the real one refuses a duplicate name inside one scope).
@@ -52,22 +78,24 @@ const scopedPrompt = () => {
         if (refusals === 0) refuse = null
         throw new Error(refuse)
       }
-      assert.equal(input.name, PERSONA_SECTION, 'a role must register the deployment persona section name')
-      assert.equal(typeof input.order, 'number', 'a role must place its section at the registry order')
+      assert.equal(input.name, PERSONA_SECTION, "a role must register this plugin's own section name")
+      assert.equal(input.order, PERSONA_ORDER, 'a role must place its section at the order this plugin owns')
       if (sections.has(input.name)) {
         throw new Error(`prompt section "${input.name}" is already registered in this scope`)
       }
       sections.set(input.name, input.text)
+      orders.set(input.name, input.order)
       registered.push(input.text)
       let live = true
       return () => {
         if (!live) return
         live = false
         sections.delete(input.name)
+        orders.delete(input.name)
       }
     },
-    getSectionOrder(name) {
-      assert.equal(name, PERSONA_ORDER, `unexpected order name ${name}`)
+    getSectionOrder() {
+      orderLookups += 1
       return 0
     }
   }
@@ -115,7 +143,7 @@ const check = (label, run) => {
   }
 }
 
-check('a role is registered as the agent-scoped deployment persona section', () => {
+check('a role is registered as its own agent-scoped persona section', () => {
   const prompt = scopedPrompt()
   const agent = agentWith(prompt)
   const bindings = createPersonaBindings()
@@ -124,8 +152,25 @@ check('a role is registered as the agent-scoped deployment persona section', () 
   assert.deepEqual(result, { changed: true, from: undefined })
   assert.equal(prompt.sections.get(PERSONA_SECTION), ROLE_A.persona, 'the persona text must be the section text')
   assert.deepEqual(prompt.registered, [ROLE_A.persona], 'exactly one registration')
+  assert.equal(prompt.sections.get(DEPLOYMENT_SECTION), DEPLOYMENT_PREFIX, 'the deployment prefix is untouched')
+  assert.equal(prompt.sections.size, 2, 'the role section sits beside the deployment prefix, not over it')
+  assert.equal(prompt.orderLookups, 0, 'the section-order table must not be consulted')
   assert.equal(bindings.roleOf(agent), ROLE_A.id)
   assert.equal(bindings.size, 1)
+})
+
+check('the deployment identity line stays in the prompt, before the role prose', () => {
+  const prompt = scopedPrompt()
+  const agent = agentWith(prompt)
+  const bindings = createPersonaBindings()
+  bindings.install(agent, ROLE_A)
+  assert.equal(
+    prompt.render(),
+    `${DEPLOYMENT_PREFIX}\n${ROLE_A.persona}`,
+    'the model must read the deployment identity line and then the role prose'
+  )
+  bindings.clear(agent)
+  assert.equal(prompt.render(), DEPLOYMENT_PREFIX, '/role none leaves an empty persona, not an empty identity line')
 })
 
 check('re-applying the role in force is a no-op', () => {
@@ -136,7 +181,7 @@ check('re-applying the role in force is a no-op', () => {
   const again = bindings.install(agent, ROLE_A)
   assert.deepEqual(again, { changed: false, from: ROLE_A.id })
   assert.deepEqual(prompt.registered, [ROLE_A.persona], 'a no-op must not register a second section')
-  assert.equal(prompt.sections.size, 1)
+  assert.equal(prompt.sections.size, 2)
 })
 
 check('switching replaces the persona without stacking or throwing', () => {
@@ -146,20 +191,23 @@ check('switching replaces the persona without stacking or throwing', () => {
   bindings.install(agent, ROLE_A)
   const result = bindings.install(agent, ROLE_B)
   assert.deepEqual(result, { changed: true, from: ROLE_A.id })
-  assert.equal(prompt.sections.size, 1, 'one scope holds one persona section at a time')
+  assert.equal(prompt.sections.size, 2, 'one scope holds one role section at a time, plus the deployment prefix')
   assert.equal(prompt.sections.get(PERSONA_SECTION), ROLE_B.persona)
+  assert.equal(prompt.sections.get(DEPLOYMENT_SECTION), DEPLOYMENT_PREFIX)
   assert.deepEqual(prompt.registered, [ROLE_A.persona, ROLE_B.persona])
   assert.equal(bindings.roleOf(agent), ROLE_B.id)
 })
 
-check('clearing a role returns the session to the deployment persona', () => {
+check('clearing a role empties the persona and keeps the deployment prefix', () => {
   const prompt = scopedPrompt()
   const agent = agentWith(prompt)
   const bindings = createPersonaBindings()
   bindings.install(agent, ROLE_A)
   const cleared = bindings.clear(agent)
   assert.deepEqual(cleared, { changed: true, from: ROLE_A.id })
-  assert.equal(prompt.sections.size, 0, 'the section must be gone from the prompt')
+  assert.equal(prompt.sections.size, 1, 'the role section must be gone from the prompt')
+  assert.equal(prompt.sections.has(PERSONA_SECTION), false, 'no role section survives a clear')
+  assert.equal(prompt.sections.get(DEPLOYMENT_SECTION), DEPLOYMENT_PREFIX)
   assert.equal(bindings.roleOf(agent), undefined)
   assert.equal(bindings.size, 0)
   assert.deepEqual(bindings.clear(agent), { changed: false, from: undefined }, 'clearing twice is harmless')
@@ -204,7 +252,8 @@ check('a refused replacement restores the persona that was in force', () => {
   assert.throws(() => bindings.install(agent, ROLE_B), /refused the per-session persona/)
   assert.equal(bindings.roleOf(agent), ROLE_A.id, 'the superseded role must come back')
   assert.equal(prompt.sections.get(PERSONA_SECTION), ROLE_A.persona)
-  assert.equal(prompt.sections.size, 1)
+  assert.equal(prompt.sections.size, 2)
+  assert.equal(prompt.sections.get(DEPLOYMENT_SECTION), DEPLOYMENT_PREFIX)
   assert.equal(complaints.length, 0, 'a restore that worked needs no complaint')
 })
 
@@ -218,7 +267,13 @@ check('a replacement whose restore also fails drops the binding and says so', ()
   assert.throws(() => bindings.install(agent, ROLE_B), /refused the per-session persona/)
   assert.equal(bindings.roleOf(agent), undefined, 'a role that could not be restored is not claimed')
   assert.equal(bindings.size, 0)
-  assert.equal(prompt.sections.size, 0, 'a discarded persona must not outlive the role it belonged to')
+  assert.equal(prompt.sections.size, 1, 'a discarded persona must not outlive the role it belonged to')
+  assert.equal(prompt.sections.has(PERSONA_SECTION), false)
+  assert.equal(
+    prompt.sections.get(DEPLOYMENT_SECTION),
+    DEPLOYMENT_PREFIX,
+    'a failed switch must never cost the session its deployment identity line'
+  )
   assert.equal(complaints.length, 1)
   assert.match(complaints[0], /could not restore role "whale-girl"/)
 })

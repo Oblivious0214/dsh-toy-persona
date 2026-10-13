@@ -29,8 +29,11 @@ import { NO_ROLE, createSessionState } from '../lib/session-state.js'
 
 const here = dirname(fileURLToPath(import.meta.url))
 const libDir = join(here, '..', 'lib')
-/** The section the per-agent persona override registers. */
-const PERSONA_SECTION = 'deployment:persona-prefix'
+/** The section a role's persona registers: this plugin's own, NOT the deployment's
+ * `deployment:persona-prefix`, which must stay in force beside it. */
+const PERSONA_SECTION = 'persona-switcher:persona'
+/** The section's placement: after the deployment persona prefix (0), before PLAN_POLICY (500). */
+const PERSONA_ORDER = 137
 const ROLE_ID = 'whale-girl'
 const ROLE_PERSONA = '你是DeepSeek鲸鱼娘，温柔高效的鲸御姐。'
 const PLAIN_ID = 'plain-helper'
@@ -81,7 +84,8 @@ const scopedPrompt = () => {
     sections,
     registered,
     section(input) {
-      assert.equal(input.name, PERSONA_SECTION, 'a role must register the deployment persona section name')
+      assert.equal(input.name, PERSONA_SECTION, "a role must register this plugin's own section name")
+      assert.equal(input.order, PERSONA_ORDER, 'a role must place its section at the order this plugin owns')
       assert.equal(typeof input.text, 'string', 'a persona section needs text')
       if (sections.has(input.name)) {
         throw new Error(`prompt section "${input.name}" is already registered in this scope`)

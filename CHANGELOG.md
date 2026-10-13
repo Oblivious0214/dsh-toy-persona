@@ -4,6 +4,23 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.1.9] - 2026-10-13
+
+### Fixed
+
+- **A role no longer deletes the deployment's own identity line.** A persona was installed as a per-agent
+  `deployment:persona-prefix` prompt section — the same name and order as the deployment's own registration —
+  which *shadows* it for that session. That section carries the deployment's `personaPrefix`
+  (`You are a coding agent powered by the {{model}} model.`), so every switched session lost the line and the
+  model could no longer say which model it was running on; only `/role none`, which disposes the override,
+  brought it back. A role now registers this plugin's own section, `persona-switcher:persona`, at order 137 —
+  after the deployment persona prefix (`DEPLOYMENT_PERSONA_PREFIX`, 0) and before the first-party guidance
+  (`PLAN_POLICY`, 500) — so the deployment prefix stays in force for every session and a switch *adds* persona
+  prose after it instead of replacing it. `/role none` now means an empty persona rather than an empty
+  identity: nothing is registered for the session, and the deployment's line is still there. `role_probe`'s
+  report, the README, the diagram and the guards follow suit, and `npm run verify` now fails the build if the
+  deployment persona prefix is registered from here again.
+
 ## [0.1.8] - 2026-10-09
 
 ### Fixed
