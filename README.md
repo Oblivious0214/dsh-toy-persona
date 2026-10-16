@@ -31,6 +31,9 @@ DeepSeek Harness 的人设切换插件：把一个角色的**人设与语言风�
   DSH 完全重启后该会话的**第一步**就是这个人设（角色在 agent 创建事务里就装好，不必等到第二步）；
   卸载插件或删掉该文件即彻底忘记。
 - 🖥️ **设置页**：设置 → **人设切换**，可视化管理角色库（新建 / 编辑 / 删除）、改新会话的默认角色。
+- 🐳 **屏幕吉祥物**：给角色导入一张立绘，当前会话的角色就作为吉祥物出现在界面上，可拖到任意位置。
+  只在「有会话界面 + 该会话有角色 + 该角色绑了立绘」三条同时成立时出现；没绑立绘的角色不显示，
+  也不占位。总开关、大小（0.5×–2.5×）与位置重置都在设置页。
 - 🧭 **专属导航图标**：设置页左栏里它带着自己的面具图标。
 - 🔍 **`role_probe` 诊断工具**：一条命令看清当前绑定、系统节点、工具清单（可关闭）。
 - 🔒 **只动该动的**：不声明任何角色级工具、技能或模型——切换人设不会顺带放权。
@@ -44,22 +47,25 @@ DeepSeek Harness 的人设切换插件：把一个角色的**人设与语言风�
 | 不遮蔽宿主的 persona 前缀 | 那是部署写的身份行（`You are a coding agent powered by the {{model}} model.`）——覆盖它模型就不知道自己跑在哪个模型上；角色以独立 section 加在它后面 |
 | 不提供自主切换工具（`switch_to_role` 之类） | 切换只经 `/role` 命令，避免模型自己改人设 |
 | 不读角色级 `tools` / `denyTools` / `skillsDir` / `model` 字段 | 这些字段即使写了也一律忽略，行为可预测 |
+| 吉祥物不吸附边缘、不自动归位 | 拖到哪就待在哪，「拖了一次自己跑回去」比没拖动更烦人 |
 
 需要「一条命令同时切人设 + 能力 + 技能」的完整版能力时，请改用 `dsh-role-switcher`；
 本插件是它的最小化派生：两者可以并存，只是「一条命令同时换能力」的能力只在前者身上。
 
 ## 它动你磁盘上的哪些文件（权能边界）
 
-一句话：**全插件只写下面 4 个位置，不联网、不上传角色内容、不读任何凭据文件**；
-除这 4 处以外的一切都只发生在内存里（一条 prompt section + 一条会话消息）。
+一句话：**全插件只写下面 6 个位置，不联网、不上传角色内容、不读任何凭据文件**；
+除这 6 处以外的一切都只发生在内存里（一条 prompt section + 一条会话消息）。
 
-### 会写入的 4 个位置
+### 会写入的 6 个位置
 
 | 位置 | 何时写 | 写什么 | 由谁触发 |
 | --- | --- | --- | --- |
 | `$DSH_HOME/persona-switcher/sessions.json` | 每次切换 / `/role none` | 每会话一条「角色 id + 时间戳」。原子写（临时文件 + rename），**文件损坏时改名成 `sessions.json.corrupt` 而不是删除**；超过保留窗口的旧记录在下次写入时清理 | `/role`、设置页点选 |
 | `<rolesDir>/<id>/ROLE.md` | 你在设置页**新建/编辑**角色 | frontmatter（`id`/`name`/`description`）+ 人设正文；顺手清掉同名的旧扁平文件 `<rolesDir>/<id>.md` | 只有你点保存 |
 | `<rolesDir>/<id>/`（含目录本身） | 你在设置页**删除**角色 | `ROLE.md` → 该角色目录 → 旧扁平文件。**真删除，不进回收站**；若删掉的正是当前默认角色，还会清掉设置里那条 `defaultRole` | 只有你点删除 |
+| `$DSH_HOME/persona-switcher/mascot/<roleId>-<stamp>.<ext>` | 你在设置页**导入立绘** | 立绘原图字节（png / jpeg / webp，解码后 ≤ 1 MiB）。每次上传写一个新文件、旧文件随后清理，每角色最多留 3 份；**不写进角色目录**，角色正文与立绘互不干扰 | 只有你点导入 |
+| `$DSH_HOME/persona-switcher/mascot-map.json` | 导入 / 清除立绘 | `{ "<roleId>": { "image": "<文件名>", "box": "WxH" } }`；**文件损坏按「没有任何角色有立绘」处理，不删除你的文件** | 只有你点导入/清除 |
 | profile 的 `cordis.patch.yml` | `/role default <id>`、设置页改默认、或删除默认角色 | **间接写入**：插件只调宿主官方的 settings 表层（`settings.update` / `settings.mutate`），真正落盘的是宿主的 ConfigEditor | 只有你显式设/清默认 |
 
 ### 只读的东西
@@ -74,21 +80,26 @@ DeepSeek Harness 的人设切换插件：把一个角色的**人设与语言风�
 - 一条角色库 prompt section（`persona-switcher:catalogue`，顺带把可用角色清单列进系统提示词）+ 每会话一条 agent 作用域的人设 section；
 - 一条 `/role` 斜杠命令；`exposeTool: true` 时一个 `role_probe` 工具；
 - 浏览器侧：一个设置页 section（id 固定 `persona-switcher`，注册在 `settings.section` 槽位、`order: 15`）+ 若干 `ps-` 前缀样式（锚定在 `.dsh-panel.ps-page`，不污染宿主 UI）；
+- 浏览器侧还有一个**独立的 React root**（挂在 `<body>` 下的 `#dsh-persona-switcher-mascot-dock`）承载屏幕吉祥物，它只读宿主的 `sidebarRight.mounted` 快照来知道「现在看着哪个会话」，**从不写入该服务**；总开关与大小存在 `localStorage` 的 `dsh-persona-switcher:mascot-shown` / `:mascot-size`，位置存在 `:mascot-pos`（仅本机、不上传）。
 - `announceRoleChange: true`（默认）时，切换后往该会话注入一条 `<system-reminder>Role change: …` 用户消息——它是**真实会话消息**，所以会出现在该会话的记录里，这是刻意的（见「配置项」）。**每一次人设变更都会发**：角色 → 角色、部署人设 → 角色、角色 → `/role none` 回到部署人设、以及被记住的角色从库里消失后改由别的角色接手，四种方向各有一条对应的声明；只有「本会话原本就是这个角色」的自动恢复保持安静，因为那不是变更（见「配置项」）。
 
 ### 网络
 
 - **没有出站请求**：不联网、不上传、不回传角色内容，也不读 `~/.dsh/.credentials.yaml` 之类的凭据文件。
-- 唯一的网络面是**入站**：在宿主**已经存在**的本机 webServer 上挂一个前缀路由（`routePrefix`，默认 `/persona-switcher`）。插件自己不开端口、不建服务器。该路由只有 4 个端点：
+- 唯一的网络面是**入站**：在宿主**已经存在**的本机 webServer 上挂一个前缀路由（`routePrefix`，默认 `/persona-switcher`）。插件自己不开端口、不建服务器。该路由只有这些端点：
 
   | 方法 | 路径 | 作用 |
   | --- | --- | --- |
-  | `GET` | `/roles` | 列出角色库 |
+  | `GET` | `/roles` | 列出角色库（每个角色带 `mascot: { image, box } \| null`） |
   | `GET` | `/role?id=<id>` | 读一个角色 |
   | `POST` | `/role` | 新建 / 覆盖一个角色 |
   | `DELETE` | `/role?id=<id>` | 删除一个角色 |
+  | `GET` | `/session?session=<id>` | 该会话当前绑定的角色（未绑定则为 `roleId: null`） |
+  | `POST` | `/mascot?role=<id>` | 为角色导入立绘（JSON：`image` 为 data URL、`box` 为 `WxH`） |
+  | `GET` | `/mascot-file/<file>` | 读回一张立绘 |
+  | `DELETE` | `/mascot?role=<id>` | 清除该角色的立绘 |
 
-  其余一律 404；请求体上限 1 MiB。
+  其余一律 404；`/mascot` 的请求体上限 2 MiB（base64 膨胀后），解码后 ≤ 1 MiB。
 - **这个路由自身不做鉴权**，它的安全性来自「跑在 `127.0.0.1` 的宿主 webServer 里」（桌面端默认如此）。如果你的宿主 webServer 被绑到非 loopback 地址，这条路由会跟着一起暴露——请保持 loopback。细节见 [SECURITY.md](SECURITY.md)。
 
 ### 一概不碰的东西
@@ -228,12 +239,16 @@ description: 温柔高效的鲸御姐，本鲸自称
 **常规**
 
 - 改新会话的默认角色（`defaultRole` 输入框，留空即回到部署默认；改完保存会写进 profile 配置）；
-- 开关 `role_probe` 诊断工具（`exposeTool`）。
+- 开关 `role_probe` 诊断工具（`exposeTool`）；
+- **屏幕吉祥物**卡片：总开关（默认开）、大小滑块（0.5×–2.5×）、「回到默认位置」。开关与大小是
+  **本机值**（存在 `localStorage`），不进 profile 配置；改完当场生效，不需要重启。
 
 **角色库**
 
 - 角色列表（每条显示名称、id、描述；页面标题旁标着角色数）；
 - **新建 / 编辑 / 删除**角色文件，删除有二次确认；
+- 每行可**导入 / 换一张 / 清除立绘**：导入后该行左侧显示立绘缩略图并标记「有立绘」，
+  当前会话的角色就会以吉祥物形式出现在界面上；
 - 当前**默认角色**的具体值在「常规」页的输入框里看（列表本身不打标记）。
 
 > 会话中途切人设只有 `/role` 一条路：浏览器侧只做角色库的增删改，不碰任何会话。
@@ -289,6 +304,11 @@ prompt registry 每一步重新组装系统节点并发出 `system-prompt/change
 - 依赖注入 `commands` / `systemPrompt` / `tools`（peer 全部 optional）；`settings` 与宿主
   `agentPresets` 只是可选读，后者仅用于 `role_probe` 的诊断输出。
 - 与 `dsh-role-switcher` 等其它人设/能力插件互不影响：本插件不注册 preset，也不占用角色 id。
+- **与 `dsh-plugin-wallpaper-engine` 同屏共存**（两者一起用是有意支持的组合）：各自的 DOM id 与
+  `<style>` id 不重名、`localStorage` 命名空间独立、吉祥物 z-index `995` 压在壁纸拉绳 `996` 之下、
+  **吉祥物样式里没有任何 CSS `filter`**（壁纸插件踩过「白屏闪一下」的坑，这里不重蹈）、
+  吉祥物**不监听 `keydown`**（Esc 仍只归壁纸插件的抽屉用）、**不注册 `contextmenu` 拦截**
+  （右键仍能出系统菜单）、也**不往 `sidebarRight` 注册任何东西**——只读它的 `mounted` 快照。
 
 ## 开发
 
@@ -296,11 +316,14 @@ prompt registry 每一步重新组装系统节点并发出 `system-prompt/change
 npm install
 npm run build      # 构建 lib/client.js（esbuild，产物入仓库）
 npm run verify     # 检查不变量：bundle id、patch 行、发布配置、不许出现 recompose、不许遮蔽部署人设前缀
-npm test           # 无网络测试：bundle 模拟 + 宿主绑定不变量 + persona 绑定不变量 + 会话状态持久化 + 创建期绑定（重启后第一步即生效）+ role-change 声明
+npm test           # 无网络测试：bundle 模拟 + 宿主绑定不变量 + persona 绑定不变量 + 会话状态持久化 + 创建期绑定（重启后第一步即生效）+ role-change 声明 + 吉祥物 host 侧 + 吉祥物 client 侧
 ```
 
-（`npm test` 实际串起 5 个脚本：`simulate-client`、`verify-host-binding`、`verify-session-state`、
-`verify-created-bind`、`verify-role-notice`；`prepublishOnly` 会把它们全跑一遍。）
+（`npm test` 实际串起 7 个脚本：`simulate-client`、`verify-host-binding`、`verify-session-state`、
+`verify-created-bind`、`verify-role-notice`、`verify-mascot`、`verify-mascot-client`；
+`prepublishOnly` 会把它们全跑一遍。其中 `verify-mascot-client` 在 Node 里驱动真实组件——自建
+hooks 宿主跑组件本身，挂载接线则对着真 React root 验——所以吉祥物的四条件、拖拽、总开关、
+尺寸与位置重置都不需要开浏览器就能回归。）
 
 改完 `src/client/index.jsx` **必须重新 `npm run build` 并提交 `lib/client.js`**：
 CI 会重建产物并逐字节比对（`git diff --exit-code -- lib/client.js`），产物过期 CI 会失败。
@@ -373,11 +396,23 @@ Then, inside a session:
 ```
 
 There is also a **Settings → Persona Switcher** page, in two tabs: **General** (edit the
-`defaultRole` used by new sessions, toggle the `role_probe` diagnostic tool) and **Role library**
-(list / create / edit / delete role files, with a delete confirmation). Its left-nav entry gets its
-own mask icon. Roles are plain Markdown on your disk; the plugin never uploads anything, never
-touches any session from the browser side, and never changes which tools the model can call.
-Switching a live session is `/role`'s job.
+`defaultRole` used by new sessions, toggle the `role_probe` diagnostic tool, and control the on-screen
+mascot) and **Role library** (list / create / edit / delete role files, with a delete confirmation,
+plus **import / replace / clear** artwork per role). Its left-nav entry gets its own mask icon. Roles
+are plain Markdown on your disk; the plugin never uploads anything, never touches any session from the
+browser side, and never changes which tools the model can call. Switching a live session is `/role`'s
+job.
+
+**On-screen mascot.** Import artwork for a role and the role of the session you are looking at appears
+as a draggable mascot — draggable anywhere, and it stays where you put it (no edge snapping). It shows
+up only when a session screen is on screen, that session has a role (not `none`), and that role has
+artwork bound; a role without artwork shows nothing at all, not a placeholder. The General tab carries
+a master switch (off means the mascot is not mounted at all, so it costs no request and no decode), a
+0.5×–2.5× size slider, and a "back to the default spot" button. The switch and the size are your
+device's values, kept in `localStorage`, and they take effect immediately without a reload. Artwork is
+written to `$DSH_HOME/persona-switcher/mascot/`, with the map in `mascot-map.json` beside it — never
+into the role directory, so a role's prose and its picture stay independent files. png / jpeg / webp
+only, up to 1 MB decoded and 4096 px per side, three versions per role.
 
 A role is applied as a prompt section of this plugin's own — `persona-switcher:persona`, placed right
 after the deployment persona prefix (order 0) and registered in that session's own scope — the same
@@ -397,29 +432,35 @@ file to make every session forget.
 
 ### What it touches on disk
 
-Four write locations, nothing else — no network egress, no uploads, no credential reads:
+Six write locations, nothing else — no network egress, no uploads, no credential reads:
 
 | Path | Written when | Content |
 | --- | --- | --- |
 | `$DSH_HOME/persona-switcher/sessions.json` | every switch / `/role none` | one record per session (role id + timestamp); atomic temp-file + rename, a corrupt file is renamed to `sessions.json.corrupt` rather than deleted |
 | `<rolesDir>/<id>/ROLE.md` | you create or edit a role in the settings page | frontmatter + persona body; a legacy flat `<rolesDir>/<id>.md` is removed at the same time |
 | `<rolesDir>/<id>/` (the directory) | you delete a role in the settings page | a real delete (no recycle bin); if the deleted role was the default, the settings entry is cleared too |
+| `$DSH_HOME/persona-switcher/mascot/<roleId>-<stamp>.<ext>` | you import artwork in the settings page | the uploaded bytes (png / jpeg / webp, ≤ 1 MB decoded); a fresh stamped file per upload with the older ones pruned, at most 3 per role — never inside the role directory |
+| `$DSH_HOME/persona-switcher/mascot-map.json` | import / clear artwork | `{ "<roleId>": { "image": "<file>", "box": "WxH" } }`; a corrupt file is treated as "no role has artwork", never deleted |
 | your profile's `cordis.patch.yml` | `/role default <id>`, setting the default in the UI, or deleting the default role | **indirect**: the plugin only calls the host settings surface, the host ConfigEditor does the writing |
 
 Everything else is in memory: one prompt section, one `/role` command, optionally one `role_probe`
-tool, one settings-page section, `ps-`prefixed styles scoped to `.dsh-panel.ps-page`, and — with
-`announceRoleChange: true` — a `<system-reminder>Role change: …` user message inside the session.
-Every persona change gets one — role to role, deployment persona to role, `/role none` back to the
-deployment persona, and a remembered role that vanished from the library handing over to another —
-while an automatic rebind that leaves the session's role unchanged stays silent.
+tool, one settings-page section, `ps-`prefixed styles scoped to `.dsh-panel.ps-page`, a second React
+root under `<body>` (`#dsh-persona-switcher-mascot-dock`) carrying the mascot — it reads the host's
+`sidebarRight.mounted` snapshot to learn which session is on screen and never writes to that service —
+and, with `announceRoleChange: true`, a `<system-reminder>Role change: …` user message inside the
+session. Every persona change gets one — role to role, deployment persona to role, `/role none` back to
+the deployment persona, and a remembered role that vanished from the library handing over to another —
+while an automatic rebind that leaves the session's role unchanged stays silent. The mascot's switch,
+size and position live in `localStorage` under this plugin's own namespace.
 
 The only network surface is **inbound**: a prefix route mounted on the host's existing loopback
-webServer (`routePrefix`, default `/persona-switcher`) with four endpoints (`GET /roles`,
-`GET /role?id=`, `POST /role`, `DELETE /role?id=`; anything else 404, body capped at 1 MiB). The
-plugin opens no port and runs no server of its own. That route has **no auth of its own** — it
-relies on the host webServer being bound to `127.0.0.1`, so keep it loopback. See
-[SECURITY.md](SECURITY.md). `role_probe`'s `command` argument executes a slash command through the
-real command pipeline, so it can run any command registered in that session, not just `/role`;
-`exposeTool: false` removes the tool entirely.
+webServer (`routePrefix`, default `/persona-switcher`) with eight endpoints (`GET /roles`,
+`GET /role?id=`, `POST /role`, `DELETE /role?id=`, `GET /session?session=`, `POST /mascot?role=`,
+`GET /mascot-file/<file>`, `DELETE /mascot?role=`; anything else 404, body capped at 1 MiB, or 2 MiB
+for the base64 artwork upload). The plugin opens no port and runs no server of its own. That route has
+**no auth of its own** — it relies on the host webServer being bound to `127.0.0.1`, so keep it
+loopback. See [SECURITY.md](SECURITY.md). `role_probe`'s `command` argument executes a slash command
+through the real command pipeline, so it can run any command registered in that session, not just
+`/role`; `exposeTool: false` removes the tool entirely.
 
 Requires DSH `>= 0.2.0-rc.1`. [MIT](LICENSE) © 2026 yupaoa.

@@ -45,10 +45,18 @@ const API_BASE = '/persona-switcher'
 const SHOWN_KEY = 'dsh-persona-switcher:mascot-shown'
 /** Resting position, `{ x, y }` in viewport pixels, top-left of the artwork box. */
 const POS_KEY = 'dsh-persona-switcher:mascot-pos'
+/** Artwork size multiplier. The host keeps ownership of a role's REAL pixel size. */
+const SIZE_KEY = 'dsh-persona-switcher:mascot-size'
+/** Smallest and largest multiplier the settings page offers. */
+const SIZE_MIN = 0.5
+const SIZE_MAX = 2.5
 /** Cross-window / cross-component broadcast for the master switch. */
 const SHOWN_EVENT = 'persona-switcher:mascot-shown'
 /** Broadcast after the settings page imports or clears artwork. */
 const CHANGED_EVENT = 'persona-switcher:changed'
+/** Broadcast when another part of the page changes the size or resets the spot. */
+const SIZE_EVENT = 'persona-switcher:mascot-size-changed'
+const POS_EVENT = 'persona-switcher:mascot-pos-reset'
 /** Gap kept between the mascot and every viewport edge, in px. */
 const EDGE = 8
 /** Default artwork width in px, used until the role reports its own box. */
@@ -101,6 +109,63 @@ const writePos = (pos) => {
   }
 }
 
+/**
+ * Forget the resting position, which is what "reset" means: the next mount (and
+ * the running mascot, once it is told) goes back to its corner. A blocked
+ * storage is ignored — the broadcast still moves the mascot on screen.
+ */
+const clearPos = () => {
+  try {
+    window.localStorage.removeItem(POS_KEY)
+  } catch {
+    /* ignore */
+  }
+}
+
+/** Clamp any input (a slider value, a stored string) into the allowed range. */
+const clampSize = (value) => {
+  const number = Number(value)
+  if (!Number.isFinite(number) || number <= 0) return 1
+  return Math.round(clamp(number, SIZE_MIN, SIZE_MAX) * 100) / 100
+}
+
+/** Read the size multiplier. A missing or corrupt value means 1×. */
+const readSize = () => {
+  try {
+    const raw = window.localStorage.getItem(SIZE_KEY)
+    return raw === null || raw === '' ? 1 : clampSize(raw)
+  } catch {
+    return 1
+  }
+}
+
+/** Persist the size multiplier, clamped. Returns what was stored. */
+const writeSize = (value) => {
+  const size = clampSize(value)
+  try {
+    window.localStorage.setItem(SIZE_KEY, String(size))
+  } catch {
+    /* ignore */
+  }
+  return size
+}
+
+/** Tell every listener (this page's other components, other windows) what changed. */
+const broadcast = (name) => {
+  try {
+    window.dispatchEvent(new CustomEvent(name))
+  } catch {
+    /* a host without CustomEvent keeps working through the storage event */
+  }
+}
+
+/** Subscribe to one broadcast, tolerating a host without `addEventListener`. */
+const onBroadcast = (name, listener) => {
+  if (typeof window === 'undefined' || typeof window.addEventListener !== 'function') return () => {}
+  window.addEventListener(name, listener)
+  return () => window.removeEventListener(name, listener)
+}
+
 /** Viewport size, with fallbacks for the pre-layout first frame. */
 const viewport = () => ({
   w: window.innerWidth || 1280,
@@ -136,11 +201,34 @@ const boxOf = (node) => {
   return null
 }
 
-/** Box size for the position maths: the painted node when there is one. */
-const boxSize = (nodeRef, width) => boxOf(nodeRef.current) ?? { w: width, h: Math.round(width * 1.3) }
+/**
+ * Box size for the position maths: the painted box when there is one — it
+ * already includes the size multiplier, because the multiplier is CSS on the
+ * wrapper — and the declared width times the multiplier otherwise.
+ */
+const boxSize = (nodeRef, width, size = 1) => boxOf(nodeRef.current) ?? estimatedBox(width, size)
 
 /** The same, for a node the caller already holds. */
-const boxSizeOf = (node, width) => boxOf(node) ?? { w: width, h: Math.round(width * 1.3) }
+const boxSizeOf = (node, width, size = 1) => boxOf(node) ?? estimatedBox(width, size)
+
+/**
+ * The box before the browser has laid it out. The image fills the wrapper's
+ * width and keeps its ratio, so the height is the declared ratio — 1.3 is the
+ * first-frame guess `styles` uses, and it is corrected on the next commit.
+ */
+const estimatedBox = (width, size) => ({ w: width * size, h: Math.round(width * size * 1.3) })
+
+/**
+ * The position the mascot should take from storage: the remembered one clamped
+ * to the viewport, or the default corner. Shared by the first mount and the
+ * explicit reset, so "reset" cannot drift away from "never dragged".
+ *
+ * @param box - the box the position must fit, already including the size.
+ */
+const positionFromStorage = (box) => {
+  const stored = readPos()
+  return stored === null ? defaultPos(box) : fitToViewport(stored, box)
+}
 
 /**
  * Minimal API call. Every failure collapses to `null` (no role, no artwork):
@@ -253,6 +341,10 @@ const STYLE_TEXT = `
   position: fixed;
   left: 0;
   top: 0;
+  /* The size multiplier lives on the wrapper, so the artwork keeps its own
+     aspect ratio and the drag can still measure the painted box. */
+  transform: scale(var(--ps-scale, 1));
+  transform-origin: top left;
   z-index: 995;                 /* below the wallpaper engine's rope (996) */
   box-sizing: border-box;
   cursor: grab;
@@ -318,6 +410,7 @@ const PersonaMascot = (props) => {
   const [seat, setSeat] = useState(undefined)
   const [session, setSession] = useState(null)
   const [roles, setRoles] = useState([])
+  const [size, setSize] = useState(() => readSize())
   const nodeRef = useRef(null)
   const dragRef = useRef(null)
 
@@ -429,16 +522,13 @@ const PersonaMascot = (props) => {
   // writes it back to storage — a resize re-clamp is a display constraint, not
   // an instruction, so it never persists.
   //
-  // Storage is read ONCE, here. Re-reading it whenever something unrelated
-  // changed (the artwork width, say) would yank a mascot the user had just
-  // placed back to the last persisted spot, which is the one thing this
-  // component must never do. `dragged` marks the point after which nothing but
-  // the user moves it.
+  // It is read from storage ONCE, here. Re-reading it whenever something
+  // unrelated changed (the artwork width, say) would yank a mascot the user had
+  // just placed back to the last persisted spot, which is the one thing this
+  // component must never do. `dragged` marks the point after which only the user
+  // (or an explicit reset) moves it.
   const dragged = useRef(false)
-  const [pos, setPos] = useState(() => {
-    const stored = readPos()
-    return stored === null ? defaultPos(boxSize(nodeRef, width)) : fitToViewport(stored, boxSize(nodeRef, width))
-  })
+  const [pos, setPos] = useState(() => positionFromStorage(estimatedBox(width, readSize())))
 
   useEffect(() => {
     const node = nodeRef.current
@@ -452,19 +542,43 @@ const PersonaMascot = (props) => {
   // otherwise a tall artwork could sit with its bottom below the viewport.
   useEffect(() => {
     if (dragged.current) return
-    setPos((current) => (current === null ? current : fitToViewport(current, boxSize(nodeRef, width))))
-  }, [width])
+    setPos((current) => (current === null ? current : fitToViewport(current, boxSize(nodeRef, width, size))))
+  }, [width, size])
+
+  // Size and reset are decided in ANOTHER component (the settings page, same
+  // bundle), which talks to this one through the broadcasts below. The storage
+  // event covers the same change made from a second window, where no event of
+  // ours crosses. Both the switch and the size are plain reads, so a listener
+  // only has to force a re-read.
+  useEffect(() => onBroadcast(SIZE_EVENT, () => setSize(readSize())), [])
+
+  useEffect(() => {
+    const reset = () => {
+      dragged.current = false
+      setPos(positionFromStorage(boxSize(nodeRef, width, size)))
+    }
+    const off = onBroadcast(POS_EVENT, reset)
+    const onStored = (event) => {
+      if (event.key !== null && event.key !== POS_KEY) return
+      reset()
+    }
+    window.addEventListener('storage', onStored)
+    return () => {
+      off()
+      window.removeEventListener('storage', onStored)
+    }
+  }, [width, size])
 
   // A resize re-clamps what is on screen, in memory only: hiding the clamp from
   // storage is deliberate, so a window that briefly shrinks and grows back
   // leaves the mascot where the user dragged it.
   useEffect(() => {
     const onResize = () => {
-      setPos((current) => (current === null ? current : fitToViewport(current, boxSize(nodeRef, width))))
+      setPos((current) => (current === null ? current : fitToViewport(current, boxSize(nodeRef, width, size))))
     }
     window.addEventListener('resize', onResize)
     return () => window.removeEventListener('resize', onResize)
-  }, [width])
+  }, [width, size])
 
   const onPointerDown = (event) => {
     const node = nodeRef.current
@@ -496,7 +610,7 @@ const PersonaMascot = (props) => {
     const dy = event.clientY - drag.startY
     if (!drag.moved && dx * dx + dy * dy < 9) return // 3px dead zone: jitter is not a drag
     drag.moved = true
-    const next = fitToViewport({ x: drag.baseX + dx, y: drag.baseY + dy }, boxSizeOf(node, width))
+    const next = fitToViewport({ x: drag.baseX + dx, y: drag.baseY + dy }, boxSizeOf(node, width, size))
     node.style.left = `${next.x}px`
     node.style.top = `${next.y}px`
   }
@@ -518,7 +632,7 @@ const PersonaMascot = (props) => {
     const target = moved
       ? { x: drag.baseX + (event.clientX - drag.startX), y: drag.baseY + (event.clientY - drag.startY) }
       : { x: drag.baseX, y: drag.baseY }
-    const next = fitToViewport(target, boxSizeOf(node, width))
+    const next = fitToViewport(target, boxSizeOf(node, width, size))
     // Written imperatively as well as through state: when the clamped result
     // equals the last committed value React skips the style diff, and the box
     // would stay wherever the hand left it.
@@ -555,7 +669,7 @@ const PersonaMascot = (props) => {
     {
       ref: nodeRef,
       className: art === null ? 'ps-mascot' : 'ps-mascot is-shown',
-      style: { width: `${width}px` },
+      style: { width: `${width}px`, '--ps-scale': String(size) },
       role: 'img',
       'aria-label': art === null ? t('mascotAria') : `${t('mascotAria')}: ${art.label}`,
       onPointerDown,
@@ -580,6 +694,22 @@ const MascotGate = (props) => {
   useEffect(() => {
     onShown(shown)
   }, [shown, onShown])
+  // The switch can be flipped from the settings page (or a second window), so
+  // the gate listens as well: with the switch off this component would otherwise
+  // never mount, and the user would have to reload the app to get it back.
+  useEffect(() => {
+    const reread = () => setShown(readShown())
+    const off = onBroadcast(SHOWN_EVENT, reread)
+    const onStored = (event) => {
+      if (event.key !== null && event.key !== SHOWN_KEY) return
+      reread()
+    }
+    window.addEventListener('storage', onStored)
+    return () => {
+      off()
+      window.removeEventListener('storage', onStored)
+    }
+  }, [])
   if (!shown) return null
   return h(PersonaMascot, { ...props, shown, onShown: setShown })
 }
@@ -662,11 +792,28 @@ const unmountLater = (root, host) => {
 }
 
 /**
- * The settings page (same bundle, `src/client/index.jsx`) reads and writes the
- * master switch through these three exports, so the key name and the broadcast
- * event live in exactly one place instead of being duplicated on both sides.
+ * The settings page (same bundle, `src/client/index.jsx`) edits the mascot
+ * through these: the master switch and the size are plain client-side values the
+ * two components pass by broadcast, so the keys and the event names live here
+ * instead of being spelled out on both sides.
  */
-export { CHANGED_EVENT, SHOWN_EVENT, SHOWN_KEY, POS_KEY, readShown }
+export {
+  CHANGED_EVENT,
+  POS_EVENT,
+  POS_KEY,
+  SHOWN_EVENT,
+  SHOWN_KEY,
+  SIZE_EVENT,
+  SIZE_KEY,
+  SIZE_MAX,
+  SIZE_MIN,
+  broadcast,
+  clearPos,
+  clampSize,
+  readShown,
+  readSize,
+  writeSize
+}
 
 /**
  * Test surface for `scripts/verify-mascot-client.mjs`: the pure layout, data and
@@ -679,14 +826,20 @@ export const mascotInternals = {
   boxOf,
   boxSizeOf,
   clamp,
+  clampSize,
+  clearPos,
   defaultPos,
+  estimatedBox,
   fitToViewport,
   followSnapshot,
   isSeatService,
+  positionFromStorage,
   readPos,
+  readSize,
   seatIdOf,
   viewport,
   writePos,
+  writeSize,
   MascotGate,
   PersonaMascot
 }

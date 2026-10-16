@@ -147,7 +147,16 @@ class FakeElement {
     this.nodeType = 1
     this.parentNode = null
     this.childNodes = []
-    this.style = {}
+    // React writes a style object onto this, and it reaches for `setProperty`
+    // whenever a value is a custom property (`--ps-scale`, the mascot's size).
+    this.style = {
+      setProperty(name, value) {
+        this[name] = String(value)
+      },
+      removeProperty(name) {
+        delete this[name]
+      }
+    }
     this.attributes = {}
     this.listeners = new Map()
     this.offsetWidth = 0
@@ -288,12 +297,25 @@ const componentClearTimeout = (id) => {
   componentTimers.delete(id)
 }
 
+const windowListeners = new Map()
 const windowStub = {
   innerWidth: 1280,
   innerHeight: 800,
   localStorage: localStorageStub,
-  addEventListener: () => {},
-  removeEventListener: () => {},
+  // A real listener registry: the settings page and the mascot talk to each
+  // other through window events, so a stub that swallows them would hide the
+  // whole cross-component path.
+  addEventListener: (name, listener) => {
+    if (!windowListeners.has(name)) windowListeners.set(name, new Set())
+    windowListeners.get(name).add(listener)
+  },
+  removeEventListener: (name, listener) => {
+    windowListeners.get(name)?.delete(listener)
+  },
+  dispatchEvent: (event) => {
+    for (const listener of [...(windowListeners.get(event.type) ?? [])]) listener(event)
+    return true
+  },
   setTimeout: componentSetTimeout,
   clearTimeout: componentClearTimeout,
   document: documentStub
@@ -598,13 +620,33 @@ const mascot = await import(pathToFileURL(MASCOT_PATH).href)
 const {
   installMascot,
   readShown,
-  mascotInternals: { artOf, fitToViewport, followSnapshot, isSeatService, seatIdOf, clamp, MascotGate, PersonaMascot }
+  readSize,
+  writeSize,
+  clampSize,
+  mascotInternals: {
+    artOf,
+    clearPos,
+    defaultPos,
+    fitToViewport,
+    followSnapshot,
+    isSeatService,
+    positionFromStorage,
+    seatIdOf,
+    clamp,
+    MascotGate,
+    PersonaMascot
+  }
 } = mascot
 
 const SHOWN_KEY = mascot.SHOWN_KEY
 const POS_KEY = mascot.POS_KEY
+const SIZE_KEY = mascot.SIZE_KEY
+const SIZE_MIN = mascot.SIZE_MIN
+const SIZE_MAX = mascot.SIZE_MAX
 const CHANGED_EVENT = mascot.CHANGED_EVENT
 const SHOWN_EVENT = mascot.SHOWN_EVENT
+const SIZE_EVENT = mascot.SIZE_EVENT
+const POS_EVENT = mascot.POS_EVENT
 const IDENTITY = (key) => key
 
 /** A `sidebarRight` double: `mounted` behaves like the host's snapshot. */
@@ -1070,6 +1112,92 @@ check(
   oversized.x === 8 && oversized.y === 8,
   JSON.stringify(oversized)
 )
+
+/* ── 8. Size multiplier and the position reset (settings page ↔ mascot) ── */
+{
+  check('a missing size multiplier means 1×', readSize() === 1)
+  storage.set(SIZE_KEY, '1.75')
+  check('a stored size multiplier is read back', readSize() === 1.75)
+  storage.set(SIZE_KEY, '9')
+  check('an oversized multiplier is clamped to the maximum', readSize() === SIZE_MAX, String(readSize()))
+  storage.set(SIZE_KEY, '0.1')
+  check('an undersized multiplier is clamped to the minimum', readSize() === SIZE_MIN, String(readSize()))
+  storage.set(SIZE_KEY, 'nonsense')
+  check('a corrupt multiplier falls back to 1×', readSize() === 1)
+  storage.delete(SIZE_KEY)
+
+  check('writeSize stores what it clamped', writeSize(1.4) === 1.4 && storage.get(SIZE_KEY) === '1.4', storage.get(SIZE_KEY))
+  check('writeSize never stores a zero or negative multiplier', writeSize(-3) === 1, String(writeSize(-3)))
+  storage.delete(SIZE_KEY)
+
+  // The size is CSS on the wrapper, so the drag can still measure the box and
+  // the artwork keeps its own aspect ratio.
+  storage.set(SIZE_KEY, '2')
+  storage.set(SHOWN_KEY, '1')
+  sessionAnswer = { ok: true, roleId: 'amiya' }
+  rolesAnswer = {
+    ok: true,
+    roles: [{ id: 'amiya', name: '阿米娅', mascot: { image: '/persona-switcher/mascot-file/amiya-abc.png', box: '512x768' } }]
+  }
+  const scaled = renderComponent(PersonaMascot, { ctx: visibleCtx, t: IDENTITY, onShown: () => {} })
+  await poll('the mascot mounts for the size checks', () => {
+    scaled.render()
+    return imageOf(scaled.element) !== undefined
+  }, 8000)
+  let scaledLayer = layerOf(scaled.element)
+  check('the size reaches the wrapper as a CSS multiplier', scaledLayer.props.style['--ps-scale'] === '2', JSON.stringify(scaledLayer.props.style))
+
+  // What the settings slider does: store, then broadcast.
+  storage.set(SIZE_KEY, '0.75')
+  windowStub.dispatchEvent(new FakeEvent(SIZE_EVENT))
+  scaled.render()
+  scaledLayer = layerOf(scaled.element)
+  check('a size broadcast is picked up without a reload', scaledLayer.props.style['--ps-scale'] === '0.75', JSON.stringify(scaledLayer.props.style))
+
+  // Put the mascot somewhere the reset must move it away from, then do exactly
+  // what the settings button does: forget the stored spot and broadcast.
+  const base = scaledLayer.ref.current
+  base.offsetWidth = 400
+  base.offsetHeight = 600
+  storage.set(POS_KEY, JSON.stringify({ x: 123, y: 55 }))
+  clearPos()
+  windowStub.dispatchEvent(new FakeEvent(POS_EVENT))
+  scaled.render()
+  check(
+    'an explicit reset forgets the stored spot',
+    !storage.has(POS_KEY) && base.style.left !== '123px',
+    `${base.style.left} / ${storage.get(POS_KEY)}`
+  )
+  const fresh = defaultPos({ w: 400, h: 600 })
+  check(
+    'and lands on the default corner for the current box',
+    base.style.left === `${fresh.x}px` && base.style.top === `${fresh.y}px`,
+    `${base.style.left} / ${base.style.top} vs ${JSON.stringify(fresh)}`
+  )
+  scaled.unmount()
+  storage.delete(SIZE_KEY)
+  storage.delete(POS_KEY)
+}
+
+/* ── 9. The master switch flips live, from the settings page ────────────── */
+{
+  localStorageStub.removeItem(SHOWN_KEY)
+  const seat = mkSeat('session-a')
+  const gate = renderComponent(MascotGate, { ctx: mkCtx(seat.service), t: IDENTITY, onShown: () => {} })
+  check('the gate starts on', gate.element !== null)
+  // The settings switch writes the key and broadcasts; the gate is a SEPARATE
+  // mount (its own root on screen), so nothing re-renders it but that event.
+  storage.set(SHOWN_KEY, '0')
+  windowStub.dispatchEvent(new FakeEvent(SHOWN_EVENT))
+  gate.render()
+  check('flipping the switch off hides the mascot without a reload', gate.element === null)
+  storage.set(SHOWN_KEY, '1')
+  windowStub.dispatchEvent(new FakeEvent(SHOWN_EVENT))
+  gate.render()
+  check('flipping it back on brings it back', gate.element !== null)
+  gate.unmount()
+  localStorageStub.removeItem(SHOWN_KEY)
+}
 
 console.log(failures.length === 0 ? `mascot client OK (${passed} checks)` : `mascot client FAILED (${passed} passed)`)
 for (const failure of failures) console.log(`  ✗ ${failure}`)

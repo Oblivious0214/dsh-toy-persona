@@ -1,3 +1,4 @@
+import { useEffect } from 'react'
 import {
   Button,
   SettingsForm,
@@ -7,6 +8,22 @@ import {
   settingsTextField
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import { installMascot } from './mascot.jsx'
+import {
+  CHANGED_EVENT,
+  POS_EVENT,
+  SHOWN_EVENT,
+  SHOWN_KEY,
+  SIZE_EVENT,
+  SIZE_KEY,
+  SIZE_MAX,
+  SIZE_MIN,
+  broadcast,
+  clearPos,
+  clampSize,
+  readShown,
+  readSize,
+  writeSize
+} from './mascot.jsx'
 
 /**
  * The persona switcher's settings page, browser half: the role library over
@@ -39,6 +56,66 @@ const emptyRole = () => ({ id: '', name: '', description: '', persona: '' })
 
 /** Role ids: lowercase letters, digits, hyphens (leading alnum). */
 const ID_PATTERN = /^[a-z0-9][a-z0-9-]*$/
+
+/** Image types the Host accepts for mascot artwork (magic-byte sniffed there). */
+const ARTWORK_ACCEPT = 'image/png,image/jpeg,image/webp'
+/** Must match the Host's `MASCOT_MAX_BYTES`; checked here so the failure is local. */
+const ARTWORK_MAX_BYTES = 1024 * 1024
+/** Must match the Host's `MASCOT_MIN_EDGE` / `MASCOT_MAX_EDGE`. */
+const ARTWORK_MIN_EDGE = 8
+const ARTWORK_MAX_EDGE = 4096
+
+/**
+ * Turn a picked file into the two things the upload route needs: a data URL and
+ * the decoded pixel size.
+ *
+ * The size comes from the browser (the Host sniffs the bytes and trusts the
+ * declared box), so it has to be measured before the upload rather than guessed:
+ * the mascot is laid out at that width, and a wrong number shows up as a
+ * stretched or squashed mascot on screen.
+ *
+ * @param file - the file the user picked.
+ * @returns `{ dataUrl, width, height }`, or `{ error }` with a dictionary key.
+ */
+const readImageUpload = async (file) => {
+  if (file === undefined || file === null) return { error: 'artworkFailed' }
+  if (file.size > ARTWORK_MAX_BYTES) return { error: 'artworkTooBig' }
+  const dataUrl = await new Promise((resolve) => {
+    const reader = new FileReader()
+    reader.onload = () => resolve(typeof reader.result === 'string' ? reader.result : '')
+    reader.onerror = () => resolve('')
+    reader.readAsDataURL(file)
+  })
+  if (dataUrl === '') return { error: 'artworkUnreadable' }
+
+  const box = await measureDataUrl(dataUrl)
+  if (box === null) return { error: 'artworkUnreadable' }
+  if (box.width < ARTWORK_MIN_EDGE || box.height < ARTWORK_MIN_EDGE) return { error: 'artworkTooSmall' }
+  if (box.width > ARTWORK_MAX_EDGE || box.height > ARTWORK_MAX_EDGE) return { error: 'artworkTooLarge' }
+  return { dataUrl, width: box.width, height: box.height }
+}
+
+/**
+ * Measure an image from its data URL.
+ * @param dataUrl - the image as a data URL.
+ * @returns `{ width, height }`, or `null` when it will not decode.
+ */
+const measureDataUrl = (dataUrl) =>
+  new Promise((resolve) => {
+    const image = new Image()
+    image.onload = () => resolve({ width: image.naturalWidth, height: image.naturalHeight })
+    image.onerror = () => resolve(null)
+    image.src = dataUrl
+  })
+
+/**
+ * One hidden file input per role row, by role id.
+ *
+ * A row needs its own `<input type="file">` (clicking a shared one cannot say
+ * which role it is for), and the row's buttons are primitives that cannot wrap
+ * it, so the input is triggered imperatively and found through this map.
+ */
+const artworkInputs = new Map()
 
 /**
  * Call the role library API.
@@ -77,6 +154,10 @@ class PersonaSwitcherCardController {
   /** `true` while the editor stages a brand-new role (id still editable). */
   editingNew = false
   busy = false
+  /** Master mascot switch, mirrored from the client-side key. */
+  mascotShown = true
+  /** Mascot size multiplier, mirrored from the client-side key. */
+  mascotSize = 1
   /** Which tab of the page is showing: `general` | `library`. */
   tab = 'general'
   /** Role id waiting for a delete confirmation, or `null`. */
@@ -93,6 +174,8 @@ class PersonaSwitcherCardController {
     this.t = t
     this.form = new SettingsFormModel(scope, [settingsTextField('defaultRole')])
     this.store = this.form.bind(() => this.projection())
+    this.mascotShown = readShown()
+    this.mascotSize = readSize()
     void this.load()
   }
 
@@ -109,7 +192,9 @@ class PersonaSwitcherCardController {
       editingNew: this.editingNew,
       busy: this.busy,
       tab: this.tab,
-      confirming: this.confirming
+      confirming: this.confirming,
+      mascotShown: this.mascotShown,
+      mascotSize: this.mascotSize
     }
   }
 
@@ -231,6 +316,107 @@ class PersonaSwitcherCardController {
       this.busy = false
       this.form.publish()
     }
+  }
+
+  /**
+   * Import artwork for one role.
+   *
+   * The role row is patched from the upload response rather than reloaded: the
+   * response already carries the freshly stamped URL, and a reload would also
+   * throw away an editor the user has open on another row.
+   *
+   * @param role - the role the artwork belongs to.
+   * @param file - the picked image file.
+   */
+  async importArtwork(role, file) {
+    this.busy = true
+    this.error = null
+    this.form.publish()
+    try {
+      const image = await readImageUpload(file)
+      if (image.error !== undefined) throw new Error(this.t(image.error))
+      const payload = await api('POST', `/mascot?role=${encodeURIComponent(role.id)}`, {
+        image: image.dataUrl,
+        box: `${image.width}x${image.height}`
+      })
+      this.patchRoleMascot(role.id, payload.mascot ?? null)
+      broadcast(CHANGED_EVENT)
+    } catch (error) {
+      this.error = error.message
+    } finally {
+      this.busy = false
+      this.form.publish()
+    }
+  }
+
+  /** Remove one role's artwork. */
+  async clearArtwork(role) {
+    this.busy = true
+    this.error = null
+    this.form.publish()
+    try {
+      await api('DELETE', `/mascot?role=${encodeURIComponent(role.id)}`)
+      this.patchRoleMascot(role.id, null)
+      broadcast(CHANGED_EVENT)
+    } catch (error) {
+      this.error = error.message
+    } finally {
+      this.busy = false
+      this.form.publish()
+    }
+  }
+
+  /** Replace one row's artwork in place and republish. */
+  patchRoleMascot(id, mascot) {
+    this.roles = this.roles.map((role) => (role.id === id ? { ...role, mascot } : role))
+    this.form.publish()
+  }
+
+  /**
+   * Flip the on-screen mascot master switch.
+   *
+   * The value is client-side (one browser, one screen), so it goes to
+   * `localStorage`, and the mascot — a separate React root in this same bundle —
+   * learns about it from the broadcast, not from a re-render of this page.
+   */
+  setMascotShown(value) {
+    this.mascotShown = value === true
+    try {
+      window.localStorage.setItem(SHOWN_KEY, this.mascotShown ? '1' : '0')
+    } catch {
+      /* a blocked storage still gets the broadcast below */
+    }
+    broadcast(SHOWN_EVENT)
+    this.form.publish()
+  }
+
+  /** Rescale the on-screen mascot. */
+  setMascotSize(value) {
+    this.mascotSize = writeSize(value)
+    broadcast(SIZE_EVENT)
+    this.form.publish()
+  }
+
+  /** Send the mascot back to its default corner and forget where it was. */
+  resetMascotPos() {
+    clearPos()
+    broadcast(POS_EVENT)
+  }
+
+  /**
+   * Re-read the mascot controls from their keys and republish.
+   *
+   * They can be changed outside this page — another window, or this same page in
+   * another tab — and a control that shows a stale value would write that stale
+   * value back on the next click.
+   */
+  syncMascotState() {
+    const shown = readShown()
+    const size = readSize()
+    if (shown === this.mascotShown && size === this.mascotSize) return
+    this.mascotShown = shown
+    this.mascotSize = size
+    this.form.publish()
   }
 
   /**
@@ -510,6 +696,55 @@ const STYLE_TEXT = `
   text-shadow: 0 1px 2px rgba(0, 0, 0, 0.25);
   background: linear-gradient(135deg, var(--ps-accent), #7c5cff);
   user-select: none;
+}
+/* The artwork thumbnail replaces the initial box once a role has a mascot, so a
+   row keeps exactly one leading slot whatever the role's state is. */
+.dsh-panel.ps-page .ps-role__thumb {
+  flex: 0 0 auto;
+  width: 34px;
+  height: 34px;
+  border-radius: 11px;
+  object-fit: cover;
+  background: var(--ps-hover);
+  border: 1px solid var(--ps-border-soft);
+}
+.dsh-panel.ps-page .ps-role__tag {
+  flex: 0 0 auto;
+  padding: 1px 6px;
+  border-radius: 999px;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--ps-accent);
+  background: var(--ps-hover);
+}
+/* ── Range slider (the mascot size control) ── */
+.dsh-panel.ps-page .ps-slider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  flex: 0 0 auto;
+}
+.dsh-panel.ps-page .ps-slider input[type='range'] {
+  width: 148px;
+  accent-color: var(--ps-accent);
+  cursor: pointer;
+}
+.dsh-panel.ps-page .ps-slider input[type='range']:disabled {
+  cursor: not-allowed;
+  opacity: 0.5;
+}
+.dsh-panel.ps-page .ps-slider__value {
+  min-width: 42px;
+  text-align: right;
+  font-size: 12px;
+  font-variant-numeric: tabular-nums;
+  color: var(--ps-ink-3);
+}
+.dsh-panel.ps-page .ps-note {
+  margin: 6px 0 0;
+  font-size: 11.5px;
+  line-height: 1.6;
+  color: var(--ps-ink-3);
 }
 .dsh-panel.ps-page .ps-role__text {
   flex: 1 1 auto;
@@ -894,7 +1129,26 @@ const PersonaSwitcherSection = (props) => {
   const { controller, t, useSnapshot } = props
   if (controller === undefined || useSnapshot === undefined || t === undefined) return null
   const state = useSnapshot((value) => value)
-  const { roles, editing, busy, error, exposeTool, tab, confirming, status, editingNew } = state
+  const { roles, editing, busy, error, exposeTool, tab, confirming, status, editingNew, mascotShown, mascotSize } =
+    state
+
+  // These two controls are client-side values another window (or another tab of
+  // this page) can change behind this page's back, so they are re-read on the
+  // events rather than trusted from the snapshot alone.
+  useEffect(() => {
+    const onStored = (event) => {
+      if (event.key !== null && event.key !== SHOWN_KEY && event.key !== SIZE_KEY) return
+      controller.syncMascotState()
+    }
+    window.addEventListener('storage', onStored)
+    window.addEventListener(SHOWN_EVENT, onStored)
+    window.addEventListener(SIZE_EVENT, onStored)
+    return () => {
+      window.removeEventListener('storage', onStored)
+      window.removeEventListener(SHOWN_EVENT, onStored)
+      window.removeEventListener(SIZE_EVENT, onStored)
+    }
+  }, [controller])
 
   const onEditField = (field) => (event) => controller.patchEditing(field, event.target.value)
 
@@ -953,13 +1207,35 @@ const PersonaSwitcherSection = (props) => {
         )}
         {roles.map((role) => (
           <div className="ps-role" key={role.id}>
-            <span className="ps-role__avatar" aria-hidden="true">
-              {initialOf(role)}
-            </span>
+            <input
+              ref={(node) => {
+                if (node === null) artworkInputs.delete(role.id)
+                else artworkInputs.set(role.id, node)
+              }}
+              type="file"
+              accept={ARTWORK_ACCEPT}
+              className="ps-sr"
+              aria-label={t('mascotImport')}
+              onChange={(event) => {
+                const file = event.target.files?.[0]
+                // Clear the picker first: picking the SAME file twice must fire
+                // another change event, and it would not from a filled input.
+                event.target.value = ''
+                if (file !== undefined) void controller.importArtwork(role, file)
+              }}
+            />
+            {role.mascot?.image ? (
+              <img className="ps-role__thumb" src={role.mascot.image} alt="" decoding="async" />
+            ) : (
+              <span className="ps-role__avatar" aria-hidden="true">
+                {initialOf(role)}
+              </span>
+            )}
             <div className="ps-role__text">
               <div className="ps-role__name">
                 <span>{role.name}</span>
                 <code className="ps-role__id">{role.id}</code>
+                {role.mascot?.image ? <span className="ps-role__tag">{t('mascotTag')}</span> : null}
               </div>
               {role.description ? <div className="ps-role__desc">{role.description}</div> : null}
             </div>
@@ -981,6 +1257,24 @@ const PersonaSwitcherSection = (props) => {
               </div>
             ) : (
               <div className="ps-role__actions">
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={busy}
+                  onClick={() => artworkInputs.get(role.id)?.click()}
+                >
+                  {role.mascot?.image ? t('mascotReplace') : t('mascotImport')}
+                </Button>
+                {role.mascot?.image ? (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    disabled={busy}
+                    onClick={() => void controller.clearArtwork(role)}
+                  >
+                    {t('mascotClear')}
+                  </Button>
+                ) : null}
                 <Button size="sm" disabled={busy} onClick={() => controller.edit(role)}>
                   {t('edit')}
                 </Button>
@@ -1186,6 +1480,66 @@ const PersonaSwitcherSection = (props) => {
               </div>
             </div>
           </section>
+          <section className="ps-card">
+            <div className="ps-card__head">
+              <div>
+                <h3>{t('mascotCard')}</h3>
+                <p>{t('mascotCardHint')}</p>
+              </div>
+            </div>
+            <div className="ps-card__body">
+              <div className="ps-row">
+                <div className="ps-row__text">
+                  <span className="ps-row__label">{t('mascotShown')}</span>
+                  <span className="ps-row__hint">{t('mascotShownHint')}</span>
+                </div>
+                <Switch
+                  checked={mascotShown}
+                  label={t('mascotShown')}
+                  onChange={(value) => controller.setMascotShown(value)}
+                />
+              </div>
+              <div className="ps-row">
+                <div className="ps-row__text">
+                  <label className="ps-row__label" htmlFor="ps-mascot-size">
+                    {t('mascotSize')}
+                  </label>
+                  <span className="ps-row__hint">{t('mascotSizeHint')}</span>
+                </div>
+                <div className="ps-slider">
+                  <input
+                    id="ps-mascot-size"
+                    type="range"
+                    min={SIZE_MIN}
+                    max={SIZE_MAX}
+                    step="0.05"
+                    value={mascotSize}
+                    aria-valuetext={`${mascotSize}×`}
+                    disabled={!mascotShown}
+                    onChange={(event) => controller.setMascotSize(clampSize(event.target.value))}
+                  />
+                  <output className="ps-slider__value" htmlFor="ps-mascot-size">
+                    {mascotSize}×
+                  </output>
+                </div>
+              </div>
+              <div className="ps-row">
+                <div className="ps-row__text">
+                  <span className="ps-row__label">{t('mascotPosition')}</span>
+                  <span className="ps-row__hint">{t('mascotPositionHint')}</span>
+                </div>
+                <Button
+                  size="sm"
+                  variant="outline"
+                  disabled={!mascotShown}
+                  onClick={() => controller.resetMascotPos()}
+                >
+                  {t('mascotResetPos')}
+                </Button>
+              </div>
+              <p className="ps-note">{t('mascotWhere')}</p>
+            </div>
+          </section>
         </div>
       ) : (
         <div className="ps-panel" role="tabpanel" id="ps-panel-library" aria-labelledby="ps-tab-library">
@@ -1272,7 +1626,26 @@ const zh = {
   saving: '保存中…',
   overridden: '已由部署配置覆盖',
   reset: '重置',
-  mascotAria: '当前角色吉祥物'
+  mascotAria: '当前角色吉祥物',
+  mascotCard: '屏幕吉祥物',
+  mascotCardHint: '为角色导入立绘后，当前会话的角色会以吉祥物形式出现在界面上，可拖到你喜欢的位置。',
+  mascotShown: '显示吉祥物',
+  mascotShownHint: '关掉后界面立刻干净，也不会有任何相关请求。仅影响本机显示。',
+  mascotSize: '大小',
+  mascotSizeHint: '缩放立绘，不改变它的比例。',
+  mascotPosition: '位置',
+  mascotPositionHint: '吉祥物拖到哪就待在哪，不会自动吸附边缘。',
+  mascotResetPos: '回到默认位置',
+  mascotWhere: '吉祥物只在会话界面出现，并且只在该会话的角色绑定了立绘时显示。',
+  mascotTag: '有立绘',
+  mascotImport: '导入立绘',
+  mascotReplace: '换一张',
+  mascotClear: '清除立绘',
+  artworkFailed: '立绘上传失败',
+  artworkTooBig: '图片太大了，请压缩到 1 MB 以内',
+  artworkTooSmall: '图片太小了，至少需要 8×8 像素',
+  artworkTooLarge: '图片尺寸太大，单边不能超过 4096 像素',
+  artworkUnreadable: '这张图片无法读取，请换 png / jpeg / webp'
 }
 
 const en = {
@@ -1316,5 +1689,26 @@ const en = {
   saving: 'Saving…',
   overridden: 'Overridden by the deployment',
   reset: 'Reset',
-  mascotAria: 'Current role mascot'
+  mascotAria: 'Current role mascot',
+  mascotCard: 'On-screen mascot',
+  mascotCardHint:
+    'Once a role has artwork, the role of the session on screen shows up as a mascot you can drag anywhere.',
+  mascotShown: 'Show the mascot',
+  mascotShownHint: 'Turning this off clears the screen at once, and sends no requests at all. This device only.',
+  mascotSize: 'Size',
+  mascotSizeHint: 'Scales the artwork without changing its proportions.',
+  mascotPosition: 'Position',
+  mascotPositionHint: 'The mascot stays where you drop it; it never snaps to an edge.',
+  mascotResetPos: 'Back to the default spot',
+  mascotWhere:
+    'The mascot only appears on a session screen, and only when that session’s role has artwork bound.',
+  mascotTag: 'Artwork',
+  mascotImport: 'Import artwork',
+  mascotReplace: 'Replace',
+  mascotClear: 'Clear artwork',
+  artworkFailed: 'The artwork upload failed',
+  artworkTooBig: 'That image is too large — please get it under 1 MB',
+  artworkTooSmall: 'That image is too small — at least 8×8 pixels',
+  artworkTooLarge: 'That image is too large — no side may exceed 4096 pixels',
+  artworkUnreadable: 'That image cannot be read — use png, jpeg or webp'
 }

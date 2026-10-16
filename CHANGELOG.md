@@ -4,6 +4,63 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.0] - 2026-10-16
+
+### Added
+
+- **A per-role mascot on screen.** Import artwork for a role from the settings page (角色库 → 导入立绘) and
+  the role of the session you are looking at shows up as a draggable mascot in the interface. It is shown
+  only when all three conditions hold: a session screen is on screen, that session has a role (not `none`),
+  and that role has artwork bound. A role without artwork shows nothing at all — no placeholder, no gap.
+  The image is stored under `<DSH_HOME>/persona-switcher/mascot/<roleId>-<stamp>.<ext>` with the map in
+  `mascot-map.json` beside it, never under the role directory, so a role's prose and its artwork stay
+  independent files. Uploads are limited to png/jpeg/webp, 1 MB decoded and 4096 px per side; three versions
+  per role are kept and older ones pruned.
+- **A master switch, a size slider and a position reset** in 常规 → 屏幕吉祥物. The switch's only effect is
+  mascot visibility — with it off the mascot is not mounted at all, so it sends no requests and costs no
+  decode. The size is a 0.5×–2.5× multiplier that scales the artwork without changing its proportions, and
+  "回到默认位置" sends the mascot back to its corner. The switch and the size are client-side values, stored in
+  `localStorage` under this plugin's own namespace, and the settings page and the mascot stay in step through
+  a broadcast (`persona-switcher:mascot-shown` / `:mascot-size-changed` / `:mascot-pos-reset`) so the switch
+  takes effect on screen immediately, without a reload.
+- **`GET /persona-switcher/session?session=`** answers "which role is this session bound to" (with an explicit
+  `roleId: null` when it is none), and `GET /persona-switcher/roles` now carries `mascot: { image, box } | null`
+  per role, so the settings page and the on-screen mascot read one source of truth for "who has artwork, and
+  how big is it".
+- `scripts/verify-mascot-client.mjs`: 114 checks over the mascot and the settings-side controls, run by
+  `npm test` with no browser. The components are driven through a purpose-built hooks host (React's own hook
+  state is not reachable from a test in a stubbed DOM), and the mount wiring is checked against a real React
+  root. It has already earned its keep — see the three fixes below, all of which it found.
+
+### Fixed
+
+- **A blank session id is no longer treated as a seat.** A seat whose id was `''` or whitespace reached
+  `GET /session?session=`, which the Host can only answer with a 404, so the mascot stayed permanently blank
+  on a screen that did have a role. A non-string or blank id now means "no seat on screen".
+- **A role whose artwork box is unreadable counts as having no artwork.** `mascot-map.json` is a file a human
+  can hand-edit, and the client used to fall back to a default width for a broken `box`, which rendered the
+  artwork at the wrong size instead of leaving the role unbound. The client re-validates the `WxH` spelling:
+  strictly what the Host publishes, nothing else.
+- **A mascot the user has placed is never moved by anything but the user.** The resting position was re-read
+  from `localStorage` whenever the artwork width changed, so importing new artwork (or a size change) yanked a
+  mascot the user had just dragged back to the last persisted spot. The position is now read once, when the
+  mascot mounts; after a drop, only a drop or an explicit reset moves it.
+- **Disposing the plugin no longer unmounts the mascot's React root mid-render.** `root.unmount()` called
+  synchronously during React's own commit is refused by React ("Attempted to synchronously unmount a root
+  while React was already rendering") and leaves the root half-torn, which a plugin reload or disable could
+  hit. The teardown is deferred by one task instead.
+
+### Changed
+
+- The client bundle now keeps `react-dom/client` external (the desktop runtime registers it), and the mascot
+  mounts through `createRoot` rather than the deprecated `react-dom` root export.
+
+### Notes
+
+- Coexists with `dsh-plugin-wallpaper-engine`: distinct dock and stylesheet ids, a distinct `localStorage`
+  namespace, z-index 995 (under the rope's 996), no CSS `filter`, no `keydown`/`contextmenu` handlers, and no
+  registration into `sidebarRight` — the seat snapshot is read, never written.
+
 ## [0.1.9] - 2026-10-13
 
 ### Fixed
