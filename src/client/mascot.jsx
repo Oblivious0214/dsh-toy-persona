@@ -878,8 +878,27 @@ const MascotGate = (props) => {
 }
 
 /**
- * Mount the mascot under its own React root on `<body>`, and keep that root in
- * step with the master switch.
+ * The live mascot root, kept at module scope so a re-apply REUSES it.
+ *
+ * This is not an optimisation, it is a correctness fix. The host calls the
+ * plugin's effect, and it may call it again (a reload, a re-apply, any host
+ * that re-runs effects). The first version removed the dock on disposal, so the
+ * second install created a NEW React root on the SAME node while the first
+ * root's deferred unmount was still queued — and that deferred teardown then
+ * deleted the shared node. The mascot vanished with no error anywhere: the dock
+ * was gone, no exception was ever reported, and the settings page was fine,
+ * which is exactly how it was reported from a real machine.
+ *
+ * So: the dock belongs to the module, not to one install. Install mounts into it
+ * (or re-renders into the root that is already there), and disposal only unmounts
+ * the CONTENT — it never removes the node.
+ */
+let liveHost = null
+let liveRoot = null
+
+/**
+ * Install the mascot under its own React root on `<body>`, reusing the dock and
+ * the root across installs.
  *
  * The host is feature-detected (`react-dom` without `createRoot`, or a missing
  * `body`) so a minimal host or a mock stays safe: nothing is created and
@@ -888,7 +907,7 @@ const MascotGate = (props) => {
  *
  * @param ctx - the browser plugin context.
  * @param t - the bound dictionary.
- * @returns a disposer that unmounts the root and removes the dock node, or
+ * @returns a disposer that unmounts the mascot but leaves its dock in place, or
  *   `undefined` when the host offers no DOM to mount into.
  */
 export const installMascot = (ctx, t) => {
@@ -896,34 +915,49 @@ export const installMascot = (ctx, t) => {
   if (typeof createRoot !== 'function') return undefined
   if (typeof ctx?.effect !== 'function') return undefined
 
-  let host = document.getElementById(DOCK_ID)
-  if (host === null) {
-    host = document.createElement('div')
-    host.id = DOCK_ID
-    document.body.appendChild(host)
+  // Reuse the dock even if something outside this module removed it from the
+  // document: the node React is mounting into must stay the node that is on
+  // screen, and a stale `liveRoot` must not be handed a new container.
+  let host = liveHost
+  if (host === null || host.parentNode === null) {
+    host = document.getElementById(DOCK_ID)
+    if (host === null) {
+      host = document.createElement('div')
+      host.id = DOCK_ID
+    }
+    if (host.parentNode === null) document.body.appendChild(host)
+    liveHost = host
+    // The dock changed identity, so the old root (if any) is attached to a node
+    // that is no longer on screen. Drop the reference; a new root is created
+    // below. Re-mounting the old one here would mean two roots on the same node,
+    // which React refuses mid-render.
+    liveRoot = null
   }
 
-  let root = null
+  const root = liveRoot ?? createRoot(host)
   try {
-    root = createRoot(host)
-    // Plain `root.render`, deliberately. The mascot's first frame may not be
-    // committed yet when this returns, and that is fine: the position maths
-    // re-clamps once the artwork width is known (and not at all after the user
-    // has dragged it), so a deferred first commit costs nothing. `flushSync`
-    // would force the concurrent renderer to work inline, which re-enters its
-    // work loop — not worth it for a decoration.
     root.render(h(MascotGate, { ctx, t, onShown: () => {} }))
   } catch (error) {
     if (typeof ctx.logger?.warn === 'function') {
       ctx.logger.warn('persona-switcher: mascot failed to mount', error)
     }
+    // A render that threw synchronously is a broken mount, not a disposable one:
+    // leave nothing behind. `unmountLater` is what makes this safe to do here.
+    liveHost = null
+    liveRoot = null
     unmountLater(root, host)
     return undefined
   }
+  liveRoot = root
 
   installStyle()
 
-  return () => unmountLater(root, host)
+  // Content only. The node stays, with the root still attached, so the next
+  // install re-renders into it instead of racing an unmount of it.
+  return () => {
+    if (liveRoot === root) liveRoot = null
+    root?.unmount?.()
+  }
 }
 
 /**

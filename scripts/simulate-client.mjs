@@ -221,9 +221,12 @@ globalThis.fetch = async (url, options) => {
 
 const registered = []
 const sectionEntries = []
+/** Disposers handed back by `ctx.effect`, by label, so they can be run. */
+const effectDisposers = new Map()
 const ctx = {
-  effect(fn) {
-    fn()
+  effect(fn, label) {
+    const stop = fn()
+    effectDisposers.set(label, typeof stop === 'function' ? stop : () => {})
     return () => {}
   },
   locale,
@@ -245,6 +248,57 @@ const ctx = {
 }
 
 bundleExports.apply(ctx)
+
+/* ── The dock must survive a dispose + re-install ──────────────────────────
+ * This is the failure that reached a real machine: the mascot disappeared, the
+ * dock was gone, no error was reported anywhere, and the settings page was
+ * fine. The cause was the mascot effect being run twice — the first disposer
+ * removed the dock node, and the second install then mounted a new React root
+ * onto a node that the first root's deferred unmount was still queued to tear
+ * down. Nothing in this suite ran install -> dispose -> install, so nothing
+ * caught it.
+ *
+ * The deliverable the browser executes is `lib/client.js`, and this file is the
+ * one place that applies it the way the host does, so the guard lives here.
+ */
+{
+  const dockId = 'dsh-persona-switcher-mascot-dock'
+  // "is it still on the page", NOT "does getElementById know the id": this
+  // simulation's removeChild detaches a node but leaves it in the id map, so an
+  // id lookup alone reports a removed dock as present and the guard silently
+  // proves nothing. The real document behaves the same way for a detached node
+  // (getElementById only walks the tree), so parentNode is the honest test.
+  const dockOnPage = () => {
+    const node = domNodes.get(dockId)
+    return node !== undefined && node.parentNode !== null
+  }
+  if (!dockOnPage()) {
+    console.error('FAIL: the mascot dock was never created by apply()')
+    process.exit(1)
+  }
+  const mascotDisposer = effectDisposers.get('persona-switcher: mascot')
+  if (typeof mascotDisposer !== 'function') {
+    console.error('FAIL: apply() registered no mascot effect')
+    process.exit(1)
+  }
+  try {
+    mascotDisposer()
+  } catch (error) {
+    console.error(`FAIL: the mascot disposer threw: ${error?.message}`)
+    process.exit(1)
+  }
+  if (!dockOnPage()) {
+    console.error('FAIL: disposing the mascot removed its dock node (a re-install will then race a dead root)')
+    process.exit(1)
+  }
+  // Install again, exactly as a re-applied effect does.
+  bundleExports.apply(ctx)
+  if (domNodes.get(dockId) === undefined) {
+    console.error('FAIL: a re-install left no dock')
+    process.exit(1)
+  }
+  console.log('mascot dock survives dispose + re-install')
+}
 
 const sec = registered.find((r) => r.slotName === 'settings.section')
 if (!sec) throw new Error('settings.section not injected')

@@ -809,21 +809,25 @@ check(
   // The teardown is deferred on purpose — React refuses a synchronous unmount
   // while it is rendering, so the plugin's disposal cannot unmount inline.
   await settle(20)
-  check('disposer removes the dock node', documentStub.getElementById('dsh-persona-switcher-mascot-dock') === null)
+  // The dock NODE deliberately stays: the module keeps it (and its root), and the
+  // next install re-renders into it. Deleting it here is what made a re-applied
+  // effect mount a second root onto a node a stale unmount was about to remove —
+  // the mascot then vanished with no error anywhere. Its CONTENT must be gone.
+  check('disposer empties the dock', dock.childNodes.length === 0, `${dock.childNodes.length} child node(s) left`)
+  check('disposer keeps the dock node for reuse', documentStub.getElementById('dsh-persona-switcher-mascot-dock') === dock)
   check('disposer leaves the settings stylesheet alone', documentStub.getElementById('persona-switcher-settings-style') === null)
 }
 
 /* ── 2b. The mount is skippable (a host without a DOM or without a context) ── */
 {
   const before = documentStub.getElementById('dsh-persona-switcher-mascot-dock')
-  check('the dock is gone before the skip checks', before === null)
+  check('the dock from the previous install is the one still on the page', before !== null)
   check('installMascot needs a ctx.effect', installMascot({}, IDENTITY) === undefined)
-  check('a refused mount leaves no dock behind', documentStub.getElementById('dsh-persona-switcher-mascot-dock') === null)
   const bare = installMascot({ effect: () => () => {} }, IDENTITY)
   check('a ctx without get() still mounts (sidebarRight is optional)', typeof bare === 'function')
   bare()
   await settle(20)
-  check('that dock is torn down too', documentStub.getElementById('dsh-persona-switcher-mascot-dock') === null)
+  check('that install reused the same dock node', documentStub.getElementById('dsh-persona-switcher-mascot-dock') === before)
 }
 
 /* ── 3. Silent states: switch off, no role, no artwork, no seat ───────── */

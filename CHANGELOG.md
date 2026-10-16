@@ -8,6 +8,19 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **The mascot no longer disappears when its host effect is run twice.** Symptom on a real machine: no mascot at
+  all, no error anywhere, settings page perfectly fine. The dock element was created and then removed. Cause: the
+  disposer returned by `installMascot` deleted the dock node, so a second install (a reload, a re-apply, any host
+  that re-runs effects) created a NEW React root on the SAME node while the first root's deferred unmount was still
+  queued — and that stale teardown then removed the shared node.
+  The dock and its root are now owned by the MODULE: an install reuses them, and disposal unmounts the CONTENT
+  without removing the node. A synchronous render failure still cleans both up.
+  This slipped through because nothing in the suite ran the built bundle through install → dispose → install, and
+  the first guard written for it checked "does `getElementById` know the id" — which a detaching `removeChild`
+  leaves true, so the guard proved nothing until it was rewritten to test `parentNode`.
+  `scripts/simulate-client.mjs` now applies `lib/client.js` the way the host does and asserts the dock survives
+  that cycle; `scripts/verify-mascot-client.mjs` asserts the disposer empties the dock but keeps the node.
+
 - **The mascot now follows a `/role` switch immediately, without re-entering the conversation.** `/role <id>`
   rebinds a session inside the Host process and broadcasts nothing to the browser, so the client can only ask.
   It now asks a new counter endpoint, `GET /persona-switcher/revision` — one integer, no disk read — every
