@@ -33,6 +33,7 @@
  * Exits non-zero when any check fails.
  */
 import { createRequire } from 'node:module'
+import { readFileSync } from 'node:fs'
 import { readFile } from 'node:fs/promises'
 import { registerHooks } from 'node:module'
 import { dirname, join } from 'node:path'
@@ -715,6 +716,12 @@ const SHOWN_EVENT = mascot.SHOWN_EVENT
 const SIZE_EVENT = mascot.SIZE_EVENT
 const REVISION_POLL_MS = mascot.mascotInternals.REVISION_POLL_MS
 const REVISION_SLOW_MS = mascot.mascotInternals.REVISION_SLOW_MS
+// The client's API prefix and the host's default `routePrefix` are two copies of
+// one fact — the bundle cannot read the host's config — so they are pinned
+// together here. Changing the host default without changing the client would make
+// every request 404, and the host half has a matching check that the artwork URL
+// follows the prefix it actually mounted at.
+const API_BASE_UNDER_TEST = '/persona-switcher'
 const POS_EVENT = mascot.POS_EVENT
 const IDENTITY = (key) => key
 
@@ -763,6 +770,18 @@ check(
   [SHOWN_KEY, POS_KEY, CHANGED_EVENT, SHOWN_EVENT].every((name) => !name.includes('wallpaper')),
   [SHOWN_KEY, POS_KEY, CHANGED_EVENT, SHOWN_EVENT].join(' ')
 )
+{
+  // Requests must go to the prefix the host actually mounts. The bundle cannot
+  // read the host's config, so these are two copies of one fact and they are
+  // pinned together here; the host half asserts its own side (the artwork URL is
+  // built from the prefix it mounted at).
+  const clientSource = readFileSync(new URL('../src/client/mascot.jsx', import.meta.url), 'utf8')
+  const declared = /const API_BASE = '([^']+)'/.exec(clientSource)?.[1]
+  check('the client asks the prefix the host mounts by default', declared === API_BASE_UNDER_TEST, String(declared))
+  const hostSource = readFileSync(new URL('../lib/index.js', import.meta.url), 'utf8')
+  const hostDefault = /routePrefix: z\.string\(\)\.default\('([^']+)'\)/.exec(hostSource)?.[1]
+  check('and that prefix is the host schema default', hostDefault === declared, `${hostDefault} vs ${declared}`)
+}
 
 /* ── 2. Mount wiring (the real createRoot path) ───────────────────────── */
 {
