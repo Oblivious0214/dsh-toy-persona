@@ -646,16 +646,35 @@ const PersonaMascot = (props) => {
     if (seat === undefined || seat === null || session === null) return undefined
     const controller = new AbortController()
     let timer = null
+    let cancelled = false
+    /** One read at a time: a broadcast and a timer must not stack up. */
+    let inFlight = false
     const load = async () => {
-      const payload = await api('/roles', controller.signal)
-      if (controller.signal.aborted) return
-      if (payload !== null && Array.isArray(payload.roles)) setRoles(payload.roles)
-      timer = window.setTimeout(() => void load(), POLL_MS)
+      if (cancelled || inFlight) return
+      inFlight = true
+      let ok = false
+      try {
+        const payload = await api('/roles', controller.signal)
+        if (cancelled || controller.signal.aborted) return
+        if (payload !== null && Array.isArray(payload.roles)) setRoles(payload.roles)
+        ok = true
+      } catch {
+        // A failed read keeps the artwork it already has and retries on the
+        // slow cycle. It MUST still schedule the next attempt: the old version
+        // set its timer after the await, so one failed fetch stopped this loop
+        // for good and a role switched from the settings page never showed up.
+        ok = false
+      } finally {
+        inFlight = false
+      }
+      if (cancelled) return
+      timer = window.setTimeout(() => void load(), ok ? POLL_MS : SESSION_RETRY_MS)
     }
     const onChanged = () => void load()
     void load()
     window.addEventListener(CHANGED_EVENT, onChanged)
     return () => {
+      cancelled = true
       window.removeEventListener(CHANGED_EVENT, onChanged)
       if (timer !== null) window.clearTimeout(timer)
       controller.abort()

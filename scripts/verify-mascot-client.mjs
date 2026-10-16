@@ -599,6 +599,8 @@ let rolesAnswer = { ok: true, roles: [] }
  * later poll see the new value, exactly as the host does.
  */
 let revisionAnswer = null
+/** When true, the `/roles` read answers 500 — a transient host failure. */
+let rolesShouldFail = false
 const revisionReads = { count: 0 }
 const bumpRevision = () => {
   revisionAnswer = { ok: true, revision: (revisionAnswer?.revision ?? 0) + 1 }
@@ -618,6 +620,10 @@ globalThis.fetch = async (url, options = {}) => {
       return { ok: false, status: 404, json: async () => ({ ok: false, error: 'unknown endpoint' }) }
     }
     return { ok: true, status: 200, json: async () => revisionAnswer }
+  }
+  if (target.includes('/roles') && rolesShouldFail) {
+    // A transient host failure, for the "does the loop keep trying" check.
+    return { ok: false, status: 500, json: async () => ({ ok: false, error: 'boom' }) }
   }
   const payload = target.includes('/session') ? sessionAnswer : rolesAnswer
   return { ok: true, status: 200, json: async () => payload }
@@ -1374,6 +1380,19 @@ const realSleep = sleep
   check('the switch landed on a counter cycle, not a slow role cycle', took < REVISION_SLOW_MS, `${took}ms`)
   check('and it cost one extra role read', countOf('/session') === beforeCount + 1, `${beforeCount} -> ${countOf('/session')}`)
   check('the counter is polled several times a second', revisionReads.count >= 2, String(revisionReads.count))
+
+  // A FAILED artwork read must not end the loop. The loop used to set its next
+  // timer after the await, so one 500 stopped it for good and a role whose
+  // artwork was imported from the settings page never appeared until the seat
+  // changed. The loop must keep trying on the slow cycle.
+  rolesShouldFail = true
+  const readsBeforeFailure = countOf('/roles')
+  await realSleep(700)
+  const readsAfterFailure = countOf('/roles')
+  rolesShouldFail = false
+  await realPoll('the artwork read keeps retrying after a failure', () => countOf('/roles') > readsAfterFailure, 12000)
+  check('a failing artwork read still schedules the next attempt', countOf('/roles') > readsAfterFailure, `${readsBeforeFailure} -> ${readsAfterFailure} -> ${countOf('/roles')}`)
+  check('the retry is on the slow cycle, not a hot loop', readsAfterFailure - readsBeforeFailure <= 1, `${readsAfterFailure - readsBeforeFailure} extra read(s) in 700ms`)
 
   // A hidden tab backs off — the mascot is not being looked at — and coming back
   // asks at once, so returning to the window is still instant.
