@@ -22,6 +22,75 @@ const jsxRuntime = await import('react/jsx-runtime')
 // cannot load in Node, so the simulation uses a behavior-equivalent shim.
 const primitives = await import('./simulate-primitives.mjs')
 
+/**
+ * The little of `react-dom/client` this simulation needs.
+ *
+ * The client half mounts the on-screen mascot through a React root of its own,
+ * and that path cannot run here — there is no DOM, and this file's job is the
+ * settings page (role library, form binding, scope subscription). So the shim
+ * records the request and does nothing: enough for `apply(ctx)` to complete and
+ * for the mascot to stay invisible, which is exactly what it is on a host with
+ * no `sidebarRight` service.
+ */
+let mountedRoot = null
+const reactDomClient = {
+  createRoot(container) {
+    mountedRoot = { container, rendered: null, unmounted: 0 }
+    globalThis.__simulatedRoot = mountedRoot
+    return {
+      render(element) {
+        mountedRoot.rendered = element
+      },
+      unmount() {
+        mountedRoot.unmounted += 1
+      }
+    }
+  }
+}
+/** A DOM stub just wide enough for `installMascot` to create its dock. */
+const fakeNode = (tag) => ({
+  tagName: String(tag).toUpperCase(),
+  id: '',
+  style: {},
+  textContent: '',
+  childNodes: [],
+  parentNode: null,
+  appendChild(child) {
+    child.parentNode = this
+    this.childNodes.push(child)
+    return child
+  },
+  removeChild(child) {
+    const at = this.childNodes.indexOf(child)
+    if (at >= 0) this.childNodes.splice(at, 1)
+    child.parentNode = null
+    return child
+  }
+})
+const domNodes = new Map()
+globalThis.document = {
+  head: fakeNode('head'),
+  body: fakeNode('body'),
+  createElement: (tag) => fakeNode(tag),
+  getElementById(id) {
+    return domNodes.get(id) ?? null
+  },
+  addEventListener() {},
+  removeEventListener() {}
+}
+const nativeCreateElement = globalThis.document.createElement
+globalThis.document.createElement = (tag) => {
+  const node = nativeCreateElement(tag)
+  Object.defineProperty(node, 'id', {
+    get: () => node.__id ?? '',
+    set: (value) => {
+      node.__id = value
+      domNodes.set(value, node)
+    }
+  })
+  return node
+}
+
 const root = join(dirname(fileURLToPath(import.meta.url)), '..')
 // The browser module identity is the package name, NOT the Cordis row id
 // (`persona-switcher` in cordis.patch.yml). See scripts/build-client.mjs.
@@ -41,6 +110,7 @@ const moduleCache = new Map()
 function hostRequire(id) {
   if (id === 'react') return react
   if (id === 'react/jsx-runtime') return jsxRuntime
+  if (id === 'react-dom/client') return reactDomClient
   if (id === '@deepseek-ai/dsh-client-ui-primitives') return primitives
   if (registrations.has(id)) {
     const factory = registrations.get(id)
@@ -240,5 +310,19 @@ await injected.save()
 state = store.getSnapshot()
 if (scopeValue.defaultRole !== 'teacher') throw new Error('form save did not write defaultRole')
 await injected.discard()
+
+// The mascot rides in this same bundle and mounts its own React root. On a host
+// with no `sidebarRight` service it stays invisible, but the dock and the root
+// must still be there — a bundle that forgot to install it would pass every
+// check above.
+if (mountedRoot === null) throw new Error('the mascot never created its root')
+if (mountedRoot.container.id !== 'dsh-persona-switcher-mascot-dock') {
+  throw new Error(`mascot dock id mismatch: ${mountedRoot.container.id}`)
+}
+if (mountedRoot.rendered === null) throw new Error('the mascot root rendered nothing')
+if (globalThis.document.getElementById('persona-switcher-mascot-style') === null) {
+  throw new Error('the mascot stylesheet was not installed')
+}
+console.log('mascot dock:', mountedRoot.container.id)
 
 console.log('SIMULATION OK')
