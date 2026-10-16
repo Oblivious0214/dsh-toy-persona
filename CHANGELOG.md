@@ -20,6 +20,13 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A host without the counter endpoint still works.** An older build answers 404, which the client treats as a
   normal outcome rather than an error: it falls back to re-reading the role every 1.5 s (backing off to 8 s when
   a read fails) and still catches a live switch within a few seconds. No configuration, no version negotiation.
+- **The mascot grows slightly under the pointer, matching `dsh-plugin-wallpaper-engine`.** The rope uses
+  `.we-rope:hover .we-rope__art { transform: scale(1.06) }` on a 120 ms transition; the mascot's own hover was a
+  barely-visible `scale(1.03)` with a different easing, so the two plugins side by side did not behave the same.
+  It now uses the rope's `1.06` and `120ms ease` verbatim. The growth stays on the IMAGE, never on the dragged
+  box, so the box keeps the size the drag gave it, the position maths never sees the growth, and the element does
+  not move. `scripts/verify-mascot-client.mjs` pins the value, the animation, and "the growth is not on the box".
+  A `prefers-reduced-motion` user still gets no scaling at all.
 
   Found on a real machine (DSH 0.2.0-rc.2 + Windows desktop, 2026-10-16) after 0.2.0 was installed; the host side
   was already correct (`GET /session?session=` returned the new role), so the first fix was client-only. The

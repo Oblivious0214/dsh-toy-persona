@@ -777,6 +777,18 @@ check(
   check('the artwork image never eats the drag', /\.ps-mascot__art[\s\S]{0,260}pointer-events:\s*none/.test(styleText))
   check('image keeps its aspect ratio inside the box', /height:\s*auto/.test(styleText))
   check('the hidden mascot contributes nothing to the hit-test', /pointer-events:\s*none/.test(styleText))
+  // The hover growth, pinned to the wallpaper engine's rope so the two mascots
+  // behave the same on screen and neither number can drift unnoticed. The
+  // growth is on the IMAGE, so the box keeps the size the drag gave it.
+  check(
+    'hover grows the artwork like the rope does (1.06)',
+    /\.ps-mascot:hover \.ps-mascot__art\s*\{\s*transform:\s*scale\(1\.06\)/.test(styleText)
+  )
+  check('the hover growth is animated, not instantaneous', /transition:\s*transform 120ms/.test(styleText))
+  check(
+    'the growth is on the image, never on the dragged box',
+    !/\.ps-mascot:hover\s*\{[^}]*transform:\s*scale/.test(styleText)
+  )
   // The real renderer (not the hook host) has to paint something into the dock,
   // or "installMascot creates a dock" would be true of an empty div.
   await poll('the real React root paints into the dock', () => dock.childNodes.length > 0, 3000)
