@@ -8,6 +8,58 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Fixed
 
+- **A configuration value can no longer take the Web GUI down.** `routePrefix` was normalized but never validated,
+  so `""` or `"/"` registered a PREFIX route with an empty path. The Host matches a prefix route with
+  `pathname.startsWith(prefix + '/')`, which an empty prefix satisfies for every URL the app does not otherwise
+  claim — this plugin then answered `404` for the frontend's own assets and shadowed the SPA fallback, and a second
+  plugin registering the same path would have failed. An unusable prefix is now refused (one path segment, or
+  nothing is mounted) with a warning saying so.
+- **`mascot.image` URLs now follow the mounted prefix instead of a hardcoded one.** The route was mounted at the
+  configured prefix while every artwork URL was built as `/persona-switcher/...`, so any other prefix served every
+  thumbnail as a 404. Both the host half and the client half are pinned to the same default by a test, so the two
+  cannot drift apart silently again.
+- **The session memory is written atomically on Windows.** `save()` claimed "temp file plus rename", but `rename`
+  does not replace an existing file on Windows (typically EPERM/EACCES, more often while a scanner or an editor
+  holds it) and the temp name was a fixed `${file}.tmp` shared by concurrent writers. Two sessions switching at
+  nearly the same moment could therefore lose the write, surfacing as `Role switch failed` or "could not be
+  remembered" with the persona already installed. The destination is removed first, the temp name is unique, the
+  file is cleaned up on failure, and writes are serialized.
+- **The artwork map is written atomically as well, and its writers are serialized.** It was written straight to the
+  map file: two concurrent imports truncated the same path, so one of them returned `200` for an entry that was
+  gone — and a torn file degrades to "empty map", which would hide every role's mascot at once.
+- **`GET /role` and `DELETE /role` wait for the first library scan.** Both used the synchronous lookup while every
+  other role route used the async one, so a request landing before the initial scan reported a role that IS on
+  disk as unknown.
+- **Destructive routes re-validate a role id before it is joined onto a path.** The catalogue is built from files a
+  person can place by hand and `DELETE /role` removes RECURSIVELY, so a role file declaring `id: ../..` aimed that
+  removal outside the role library. Such an id is now dropped while the library is scanned, and the delete and
+  artwork-pruning paths refuse anything that is not a single path segment.
+- **`GET /mascot-file/<name>` validates the RESOLVED path, not the string.** `..%2F..%2Fsessions.json` passed the
+  string test; it was only harmless because no layer decoded the request and the extension map rejected `.json`.
+  The guard now survives any future decoding.
+- **A hand-edited box is normalized or reported, never silently dropped.** `"9999x9999"` (out of range) used to
+  read as "this role has no artwork" with no warning at all, which is indistinguishable from a missing file; a
+  padded `"0080x0120"` is now normalized to `80x120` rather than discarded.
+- **A blank `DSH_HOME` no longer scatters data next to the app.** `??` only guards null/undefined, so `DSH_HOME=''`
+  made every path relative to the working directory.
+- **The request wrapper contains every failure.** A route that throws now answers `500` JSON instead of relying on
+  the Host's own catch (which answers a bodiless `400`), and no request can be left hanging. The wrapper is driven
+  directly with a throwing handler in the tests, because no route is reachable in a state that throws.
+- **The mascot's role read backs off when the Host stops answering.** A failed read was collapsed into "the answer
+  is null", so the retry branch was unreachable: a Host that went away while the fast cadence was live was asked
+  four times a second, indefinitely. Failures are now reported as failures, the cadence is read from a ref rather
+  than a captured value (so an old Host really does slow down), and a hidden tab is slow for the session read too.
+- **Each artwork import no longer adds a permanent poll loop.** Every `CHANGED_EVENT` broadcast started a second
+  `/roles` chain while the previous timer was still pending, and the orphaned timer was unreachable from cleanup —
+  ten imports meant ten concurrent loops. A broadcast now cancels the queued read first, and only one chain exists.
+- **A `visibilitychange` no longer doubles the revision poll.** The timer id was left in place while its callback
+  awaited a response, so returning to the tab armed a second chain that grew with every hide/show.
+- **The master switch reacts to its own in-window broadcast.** Its listeners guarded on `event.key`, which a
+  `CustomEvent` does not have, so the plugin's own event was rejected as "a storage event for another key" and a
+  second settings surface kept a stale toggle until the page was reloaded.
+- **The settings screen cannot be taken down by a hand-edited role file.** A role with no `name` threw
+  `editing.name.trim()` during render, and a non-array `/roles` response would have thrown in `roles.map`. Both
+  are guarded now, like the mascot half already was.
 - **The mascot no longer disappears when its host effect is run twice.** Symptom on a real machine: no mascot at
   all, no error anywhere, settings page perfectly fine. The dock element was created and then removed. Cause: the
   disposer returned by `installMascot` deleted the dock node, so a second install (a reload, a re-apply, any host

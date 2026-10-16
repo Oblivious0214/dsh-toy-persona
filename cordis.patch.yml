@@ -1,12 +1,19 @@
 # dsh-persona-switcher bundle patch: one host-plane row.
 #
-# The row is host-plane on purpose. It must be able to register agent presets
-# (the `agentPresets` registry) and to see every agent, and a row mounted INSIDE
-# a preset realm cannot reach either. Personas themselves are registered as
-# ordinary `@deepseek-ai/dsh-agent-preset` declarations at runtime, one per role
-# file found under the role library.
+# The row is host-plane on purpose: it must see every agent and be able to reach
+# each agent's own prompt registry. A row mounted INSIDE a preset realm cannot do
+# either.
+#
+# A role is NOT an agent preset. Nothing here imports `@deepseek-ai/dsh-agent-preset`
+# and nothing is registered with the preset registry — that is the whole point of
+# the plugin, and `npm run verify` fails if it regresses. Applying a role registers
+# a single prompt section (`persona-switcher:persona`) on that ONE agent, so the
+# deployment's tools, skills, model route and plugin composition are untouched.
 - insert:
     - id: persona-switcher
       name: 'dsh-persona-switcher'
       config:
-        rolesDir: !!js process.env.DSH_ROLES_DIR
+        # Empty means "unset": the row then uses <DSH_HOME>/roles. Writing the
+        # environment variable this way keeps `undefined` (no variable) and `''`
+        # (variable set to nothing) the same answer.
+        rolesDir: !!js process.env.DSH_ROLES_DIR || ''

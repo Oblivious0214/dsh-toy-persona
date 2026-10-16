@@ -36,7 +36,7 @@
 import assert from 'node:assert/strict'
 import { createServer } from 'node:http'
 import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
-import { rmSync } from 'node:fs'
+import { existsSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
@@ -254,7 +254,7 @@ const ctx = {
   }
 }
 
-await apply(ctx, ctx.config)
+const hostSurface = await apply(ctx, ctx.config)
 assert.ok(typeof handler === 'function', 'the row registered no request handler')
 
 const server = createServer((req, res) => {
@@ -423,6 +423,43 @@ try {
     assert.equal(walked.status, 404)
     const bare = await call('GET', '/persona-switcher/mascot-file/sessions.json')
     assert.equal(bare.status, 404)
+  })
+
+  await checkAsync('an out-of-range box reads as unbound, and a padded one is normalised', async () => {
+    // These pass the shape pattern, so the range check is the only thing that
+    // catches them. They used to be dropped silently deeper in the read path,
+    // where "this role has no mascot" is indistinguishable from a missing file.
+    for (const box of ['9999x9999', '7x100', '100x7', '4097x100']) {
+      await writeFile(mapFile, JSON.stringify({ amiya: { image: cleanAmiya, box } }), 'utf8')
+      assert.equal(await mascotOf('amiya'), null, `box ${box} was accepted`)
+    }
+    // Padding is not an error: it normalises, and the role keeps its mascot.
+    for (const [written, expected] of [['0080x0120', '80x120'], ['0008x8', '8x8']]) {
+      await writeFile(mapFile, JSON.stringify({ amiya: { image: cleanAmiya, box: written } }), 'utf8')
+      const normalised = await mascotOf('amiya')
+      assert.equal(normalised?.box, expected, `box ${written} should normalise to ${expected}`)
+    }
+  })
+
+  await checkAsync('a role id that is not one path segment is never catalogue-visible or deletable', async () => {
+    // The catalogue is built from files a person can place by hand, and the delete
+    // route removes RECURSIVELY. A role file declaring `id: ../outside-role` used
+    // to aim that removal at the role library's parent. It is now dropped while
+    // the library is scanned, so the route cannot even name it — which is the
+    // stronger guarantee: check both facts, not just the status code.
+    const nested = join(rolesDir, '..', 'outside-role')
+    await mkdir(nested, { recursive: true })
+    await writeFile(join(nested, 'ROLE.md'), '---\nid: ../outside-role\nname: Sneaky\ndescription: x\n---\n\nBody\n', 'utf8')
+    const roles = await rolesOf()
+    assert.ok(
+      !roles.some((role) => String(role.id).includes('..')),
+      `the library published a traversal id: ${JSON.stringify(roles.map((role) => role.id))}`
+    )
+    const { status } = await call('DELETE', '/persona-switcher/role?id=..%2Foutside-role')
+    assert.ok(status === 404 || status === 400, `expected a refusal, got ${status}`)
+    assert.ok(existsSync(join(nested, 'ROLE.md')), 'the guarded file was deleted anyway')
+    // Tidy up through the filesystem rather than the route.
+    await rm(nested, { recursive: true, force: true })
   })
 
   await checkAsync('a hand edit that repairs the map takes effect without a restart', async () => {
@@ -674,6 +711,151 @@ try {
     for (let i = 0; i < 5; i += 1) await revisionNow()
     assert.equal(await readFile(mapFile, 'utf8'), mapBefore)
     assert.equal(await readFile(stateFile, 'utf8'), stateBefore)
+  })
+
+  /* ── The request wrapper contains every failure ─────────────────────────── */
+  // No route is reachable in a state that throws — every one guards its own work
+  // — which is exactly why the outer wrapper needs its own seam. A throw that
+  // escapes it would be an unhandled rejection inside the Host process, and a
+  // request that gets no answer hangs the caller. Both are unacceptable for a
+  // decoration, so the wrapper is driven directly with a handler that throws.
+
+  await checkAsync('a route that throws still answers 500 (never an unhandled rejection)', async () => {
+    const serveRequest = hostSurface?.serveRequest
+    assert.equal(typeof serveRequest, 'function', 'apply() exposed no serveRequest seam')
+    const warnings = []
+    const captured = []
+    const fakeRes = {
+      writableEnded: false,
+      writeHead(status, headers) {
+        captured.push({ status, headers })
+      },
+      end(body) {
+        this.writableEnded = true
+        captured.push({ body })
+      }
+    }
+    serveRequest(
+      { url: '/persona-switcher/roles', method: 'GET' },
+      fakeRes,
+      async () => {
+        throw new Error('boom')
+      },
+      { warn: (line) => warnings.push(line) }
+    )
+    // The rejection is delivered a microtask later.
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    assert.equal(captured[0]?.status, 500, 'the failing route did not answer 500')
+    assert.match(String(captured[1]?.body), /request failed/)
+    assert.ok(
+      warnings.some((line) => line.includes('boom')),
+      'the failure was swallowed without a warning'
+    )
+  })
+
+  await checkAsync('a prefix that would claim the whole app is refused', async () => {
+    // One configuration value must not be able to take the Web GUI down. A prefix
+    // route matches with `pathname.startsWith(prefix + '/')`, so an empty path
+    // matches EVERY request the app does not otherwise claim — this plugin would
+    // answer 404 for the frontend's own assets and shadow the SPA fallback.
+    const normalize = hostSurface?.normalizeRoutePrefix
+    assert.equal(typeof normalize, 'function', 'apply() exposed no normalizeRoutePrefix seam')
+    for (const bad of ['', '/', '   ', '//', '///', 'persona/../switcher']) {
+      assert.equal(normalize(bad), undefined, `${JSON.stringify(bad)} was accepted as a prefix`)
+    }
+    assert.equal(normalize('/persona-switcher'), '/persona-switcher')
+    assert.equal(normalize('persona-switcher'), '/persona-switcher')
+    assert.equal(normalize('/ps/'), '/ps')
+  })
+
+  await checkAsync('a refused prefix mounts no routes at all', async () => {
+    // The seam above proves the decision; this proves nothing is registered when
+    // the decision is "no". A fresh apply with an unusable prefix must leave the
+    // web server untouched and say why.
+    const warnings = []
+    let registrations = 0
+    const bare = {
+      logger: { info() {}, warn: (line) => warnings.push(String(line)), error() {}, debug() {} },
+      config: { ...ctx.config, routePrefix: '' },
+      fiber: { entry: { id: 'persona-switcher' } },
+      effect: (factory) => {
+        driveEffect(factory)
+        return () => {}
+      },
+      on: () => () => {},
+      get: () => undefined,
+      commands: { register: () => () => {} },
+      systemPrompt: { section: () => () => {} },
+      tools: { register: () => () => {} },
+      inject: (names, run) => {
+        const scoped = {
+          effect: (factory) => {
+            driveEffect(factory)
+            return () => {}
+          },
+          get: (service) =>
+            service === 'webServer'
+              ? {
+                  register: () => {
+                    registrations += 1
+                    return () => {}
+                  }
+                }
+              : undefined
+        }
+        if (Array.isArray(names) && names.includes('webServer')) run(scoped)
+      }
+    }
+    await apply(bare, bare.config)
+    assert.equal(registrations, 0, 'an unusable prefix still registered a route')
+    assert.ok(
+      warnings.some((line) => line.includes('not a usable')),
+      `nothing warned about the refused prefix: ${JSON.stringify(warnings)}`
+    )
+  })
+
+  await checkAsync('an unparsable request URL is contained too', async () => {
+    const serveRequest = hostSurface.serveRequest
+    const captured = []
+    const fakeRes = {
+      writableEnded: false,
+      writeHead(status) {
+        captured.push({ status })
+      },
+      end() {
+        this.writableEnded = true
+      }
+    }
+    // `new URL` throws on this, synchronously, inside the wrapper.
+    serveRequest({ url: 'http://[', method: 'GET' }, fakeRes, async () => {}, { warn: () => {} })
+    assert.equal(captured[0]?.status, 500, 'a malformed URL did not answer 500')
+  })
+
+  await checkAsync('the wrapper never answers a request twice', async () => {
+    // `sendJson` bails out on a response that already ended, so a route that
+    // answers and THEN throws cannot produce a second writeHead.
+    const sendJsonProbe = []
+    const fakeRes = {
+      writableEnded: false,
+      writeHead(status) {
+        sendJsonProbe.push(status)
+      },
+      end() {
+        this.writableEnded = true
+      }
+    }
+    hostSurface.serveRequest(
+      { url: '/persona-switcher/roles', method: 'GET' },
+      fakeRes,
+      async (req, res) => {
+        res.writeHead(200)
+        res.end('ok')
+        throw new Error('after the answer')
+      },
+      { warn: () => {} }
+    )
+    await new Promise((resolve) => setTimeout(resolve, 10))
+    assert.deepEqual(sendJsonProbe, [200], `answered ${sendJsonProbe.length} time(s)`)
   })
 } finally {
   await new Promise((resolve) => server.close(resolve))

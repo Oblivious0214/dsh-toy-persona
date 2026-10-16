@@ -260,20 +260,31 @@ const positionFromStorage = (box) => {
 }
 
 /**
- * Minimal API call. Every failure collapses to `null` (no role, no artwork):
- * a mascot is decoration, so a missing or failing endpoint must degrade to
- * "nothing on screen" rather than to an error UI.
+ * Minimal API call.
+ *
+ * Returns `{ ok, value }` rather than the payload alone, because "the host
+ * answered null" and "the request never arrived" are different facts and the
+ * poll cadence depends on telling them apart: a failed read has to back off,
+ * while a valid empty answer must keep the normal cycle. Collapsing both to
+ * `null` — as this did — made every backoff branch unreachable.
+ *
+ * A mascot is decoration, so nothing here throws: an outage degrades to "read
+ * failed", which the callers handle.
+ *
  * @param path - endpoint path without the base prefix.
  * @param signal - abort signal for the owning effect.
- * @returns the parsed JSON response, or `null`.
+ * @returns `{ ok, value }` where `value` is null unless the host answered JSON.
  */
 const api = async (path, signal) => {
   try {
     const response = await fetch(`${API_BASE}${path}`, { signal })
-    if (!response.ok) return null
-    return await response.json()
+    // A non-2xx is a real answer about this endpoint (an old host's 404 on
+    // /revision, say), so it is reported as a successful read with no value:
+    // the caller must NOT treat it as an outage and back off forever.
+    if (!response.ok) return { ok: true, value: null }
+    return { ok: true, value: await response.json() }
   } catch {
-    return null
+    return { ok: false, value: null }
   }
 }
 
@@ -475,8 +486,19 @@ const PersonaMascot = (props) => {
   }
   const nodeRef = useRef(null)
   const dragRef = useRef(null)
-  /** The role re-read cycle: fast when the host publishes a counter. */
-  const pollMs = () => (fast ? REVISION_POLL_MS : REVISION_SLOW_MS)
+  /**
+   * The role re-read cycle: fast when the host publishes a counter, slow when it
+   * does not, and slow while this window is hidden.
+   *
+   * Read through the ref, not the state variable: the poll effect is not re-run
+   * when `fast` changes, so a captured `fast` would keep a stale cadence — an
+   * old host's slow answer would arrive but the loop would carry on at full
+   * speed, and a downed host could never be backed off at all.
+   */
+  const pollMs = () => {
+    if (document.visibilityState === 'hidden') return REVISION_SLOW_MS
+    return fastRef.current ? REVISION_POLL_MS : REVISION_SLOW_MS
+  }
 
   // Condition b: a session seat is on screen. The service may not be registered
   // yet at boot (the wallpaper engine polls for the same reason), so a missing
@@ -491,11 +513,18 @@ const PersonaMascot = (props) => {
       if (cancelled) return
       const service = typeof ctx.get === 'function' ? ctx.get('sidebarRight') : null
       if (service === undefined || service === null) {
-        if (Date.now() - start < PROBE_FOR_MS) timer = window.setTimeout(arm, PROBE_MS)
+        // A service that is not up yet is normal at boot, but giving up for the
+        // rest of the app's life is not: past the eager window this settles into
+        // a slow probe, so a late registration still gets a mascot.
+        const delay = Date.now() - start < PROBE_FOR_MS ? PROBE_MS : POLL_MS
+        timer = window.setTimeout(arm, delay)
         return
       }
       if (!isSeatService(service)) {
+        // The service exists but does not report a seat yet — a different state
+        // from "there is no seat". Keep watching rather than stopping here.
         setSeat(undefined)
+        timer = window.setTimeout(arm, PROBE_MS)
         return
       }
       const followed = followSnapshot(service.mounted, () => {
@@ -506,7 +535,9 @@ const PersonaMascot = (props) => {
         setSeat(seatIdOf(followed.current.value))
       })
       stop = followed.stop
-      setSeat(seatIdOf(followed.value))
+      // `followed.current`, not `followed.value`: the subscription may already
+      // have fired, and the later value would then be the stale one.
+      setSeat(seatIdOf(followed.current.value))
     }
     arm()
     return () => {
@@ -544,9 +575,13 @@ const PersonaMascot = (props) => {
     let cancelled = false
     let timer = null
     let reported = null
+    /** `true` once a read has failed, so the cycle backs off instead of hammering. */
+    let failing = false
     const load = async () => {
-      const payload = await api(`/session?session=${encodeURIComponent(String(seat))}`, controller.signal)
+      const read = await api(`/session?session=${encodeURIComponent(String(seat))}`, controller.signal)
       if (cancelled || controller.signal.aborted) return
+      failing = !read.ok
+      const payload = read.ok ? read.value : null
       const roleId = payload === null ? null : (payload.roleId ?? null)
       const next = typeof roleId === 'string' && roleId !== '' ? roleId : null
       // Only a CHANGE republishes: an identical answer every cycle must not
@@ -558,22 +593,23 @@ const PersonaMascot = (props) => {
     }
     const arm = (delay) => {
       timer = window.setTimeout(async () => {
+        // The id has fired, so it must not be treated as a live timer any more:
+        // leaving it there is what let `visibilitychange` and this callback both
+        // schedule the next tick, silently doubling the chain.
+        timer = null
         if (cancelled) return
-        let failed = false
-        try {
-          await load()
-        } catch {
-          // A failed read keeps the last known role and backs off, rather than
-          // retrying at full speed against a host that is not answering.
-          failed = true
-        }
+        await load()
         if (cancelled) return
-        arm(failed ? SESSION_RETRY_MS : pollMs())
+        // `failing` is set by the read itself, so the backoff is reachable. The
+        // cadence is read from the ref, not from a captured `fast`, so a host
+        // that turns out to be an old one slows down without waiting for a
+        // revision change that a downed host could never send.
+        arm(failing ? SESSION_RETRY_MS : pollMs())
       }, delay)
     }
     // Read immediately when the seat appears — arriving in a session must not
     // wait for a poll cycle — then keep asking on the current cycle.
-    void load().catch(() => {})
+    void load()
     arm(pollMs())
     return () => {
       cancelled = true
@@ -595,40 +631,55 @@ const PersonaMascot = (props) => {
     let cancelled = false
     let timer = null
     let last = null
+    /** True only while a read is actually running. */
+    let inFlight = false
     // A hidden window is not being looked at, so it does not need quarter-second
     // answers: it falls back to the slow cycle (and asks once on the way back,
     // so returning to the window is still immediate).
     const cadence = () => (document.visibilityState === 'hidden' ? REVISION_SLOW_MS : REVISION_POLL_MS)
     const ask = async () => {
-      const payload = await api('/revision', undefined)
-      if (cancelled) return
-      const next = payload === null ? null : Number(payload.revision)
-      if (!Number.isFinite(next)) {
-        reportFast(false)
-        return false
+      inFlight = true
+      try {
+        const read = await api('/revision', undefined)
+        if (cancelled) return false
+        // An unanswered read backs off; a 404 is an ANSWER (this host predates
+        // the endpoint) and only means the slow cycle, never a retry storm.
+        if (!read.ok) return false
+        const next = read.value === null ? null : Number(read.value.revision)
+        if (!Number.isFinite(next)) {
+          reportFast(false)
+          return true
+        }
+        reportFast(true)
+        if (last !== null && next !== last) setRevision(next)
+        last = next
+        return true
+      } finally {
+        inFlight = false
       }
-      reportFast(true)
-      if (last !== null && next !== last) setRevision(next)
-      last = next
-      return true
     }
     const arm = (delay) => {
       timer = window.setTimeout(async () => {
+        // Null it the moment it fires, so a pending timer is never mistaken for
+        // a spent one.
+        timer = null
         if (cancelled) return
-        let ok = false
-        try {
-          ok = await ask()
-        } catch {
-          ok = false
-        }
+        const ok = await ask()
         if (cancelled) return
-        arm(ok ? cadence() : REVISION_SLOW_MS)
+        // Exactly one chain: by now `timer` is null either way, so this is the
+        // only place a new tick is scheduled from the timer path.
+        if (timer === null) arm(ok ? cadence() : REVISION_SLOW_MS)
       }, delay)
     }
     arm(cadence())
     const onVisibility = () => {
       if (document.visibilityState !== 'visible') return
+      // A read already in flight will schedule the next tick itself, so arming
+      // here would start a SECOND chain — that is what permanently doubled the
+      // poll rate after a hide/show. Otherwise, ask at once.
+      if (inFlight) return
       if (timer !== null) window.clearTimeout(timer)
+      timer = null
       arm(0)
     }
     document.addEventListener('visibilitychange', onVisibility)
@@ -654,23 +705,30 @@ const PersonaMascot = (props) => {
       inFlight = true
       let ok = false
       try {
-        const payload = await api('/roles', controller.signal)
+        const read = await api('/roles', controller.signal)
         if (cancelled || controller.signal.aborted) return
+        ok = read.ok
+        const payload = read.ok ? read.value : null
         if (payload !== null && Array.isArray(payload.roles)) setRoles(payload.roles)
-        ok = true
-      } catch {
-        // A failed read keeps the artwork it already has and retries on the
-        // slow cycle. It MUST still schedule the next attempt: the old version
-        // set its timer after the await, so one failed fetch stopped this loop
-        // for good and a role switched from the settings page never showed up.
-        ok = false
       } finally {
         inFlight = false
       }
       if (cancelled) return
+      // A failed read keeps the artwork it already has and retries on the slow
+      // cycle. It MUST still schedule the next attempt: the old version set its
+      // timer after the await, so one failed fetch stopped this loop for good
+      // and a role whose artwork was imported from the settings page never
+      // appeared. Re-arming here also keeps exactly ONE chain alive.
       timer = window.setTimeout(() => void load(), ok ? POLL_MS : SESSION_RETRY_MS)
     }
-    const onChanged = () => void load()
+    /** A broadcast starts a fresh read and cancels the one the timer had queued. */
+    const onChanged = () => {
+      if (timer !== null) {
+        window.clearTimeout(timer)
+        timer = null
+      }
+      void load()
+    }
     void load()
     window.addEventListener(CHANGED_EVENT, onChanged)
     return () => {
@@ -685,7 +743,11 @@ const PersonaMascot = (props) => {
   // only re-read on its broadcast or when another window changes the value.
   useEffect(() => {
     const onStored = (event) => {
-      if (event.key !== null && event.key !== SHOWN_KEY) return
+      // A `storage` event carries `key`; this plugin's own CustomEvent does not.
+      // Requiring `undefined` here as well is what keeps the in-window broadcast
+      // working — the guard used to reject it, so a second settings surface kept
+      // a stale toggle until the page reloaded.
+      if (event.key !== undefined && event.key !== null && event.key !== SHOWN_KEY) return
       props.onShown(readShown())
     }
     window.addEventListener('storage', onStored)
@@ -756,6 +818,9 @@ const PersonaMascot = (props) => {
   // leaves the mascot where the user dragged it.
   useEffect(() => {
     const onResize = () => {
+      // Never re-clamp a mascot the hand is currently holding: committing a
+      // position mid-drag would teleport it away from the pointer.
+      if (dragRef.current !== null) return
       setPos((current) => (current === null ? current : fitToViewport(current, boxSize(nodeRef, width, size))))
     }
     window.addEventListener('resize', onResize)

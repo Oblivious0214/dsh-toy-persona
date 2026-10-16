@@ -184,7 +184,10 @@ class PersonaSwitcherCardController {
     return {
       ...this.form.shell(),
       defaultRole: this.form.field('defaultRole'),
-      exposeTool: this.scope.getSnapshot().value?.exposeTool ?? true,
+      // The optional chain has to cover `getSnapshot` itself, not just its
+      // result: this runs inside the store's publish (a render path), so a form
+      // model without a snapshot would throw while the settings screen paints.
+      exposeTool: this.scope.getSnapshot?.()?.value?.exposeTool ?? true,
       status: this.status,
       error: this.error,
       roles: this.roles,
@@ -239,7 +242,10 @@ class PersonaSwitcherCardController {
       const payload = await api('GET', '/roles')
       if (generation !== this.generation) return
       this.status = 'ready'
-      this.roles = payload.roles ?? []
+      // Shape-checked, not trusted: a host of a different version could answer
+      // something else, and a non-array here throws inside the settings render
+      // (`roles.map`) — the mascot half already guards this for the same reason.
+      this.roles = Array.isArray(payload?.roles) ? payload.roles : []
     } catch (error) {
       if (generation !== this.generation) return
       this.status = 'error'
@@ -1137,7 +1143,13 @@ const PersonaSwitcherSection = (props) => {
   // events rather than trusted from the snapshot alone.
   useEffect(() => {
     const onStored = (event) => {
-      if (event.key !== null && event.key !== SHOWN_KEY && event.key !== SIZE_KEY) return
+      // `undefined` means this plugin's own CustomEvent, which carries no `key`;
+      // only a real StorageEvent names one. Without that case the broadcast
+      // listeners below never ran, and a switch flipped in this window left the
+      // stored value and the displayed toggle disagreeing.
+      if (event.key !== undefined && event.key !== null && event.key !== SHOWN_KEY && event.key !== SIZE_KEY) {
+        return
+      }
       controller.syncMascotState()
     }
     window.addEventListener('storage', onStored)
@@ -1167,7 +1179,11 @@ const PersonaSwitcherSection = (props) => {
 
   const idText = editing === null ? '' : editing.id
   const idInvalid = editingNew && !ID_PATTERN.test(idText)
-  const nameInvalid = editing === null || editing.name.trim() === ''
+  // `String(...)` around the value: this renders inside the HOST's settings
+  // screen, and the role library is a directory a person can hand-edit. A role
+  // file with no `name` used to throw right here — taking the whole settings
+  // screen down over one malformed file.
+  const nameInvalid = editing === null || String(editing.name ?? '').trim() === ''
 
   const roleLibrary = (
     <section className="ps-card">

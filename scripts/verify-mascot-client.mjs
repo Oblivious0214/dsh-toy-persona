@@ -601,6 +601,8 @@ let rolesAnswer = { ok: true, roles: [] }
 let revisionAnswer = null
 /** When true, the `/roles` read answers 500 — a transient host failure. */
 let rolesShouldFail = false
+/** When true, every request rejects outright — a host that is not listening. */
+let hostDown = false
 const revisionReads = { count: 0 }
 const bumpRevision = () => {
   revisionAnswer = { ok: true, revision: (revisionAnswer?.revision ?? 0) + 1 }
@@ -614,6 +616,7 @@ globalThis.fetch = async (url, options = {}) => {
   const target = String(url)
   requests.push(target)
   if (options.signal?.aborted) throw new FakeAbortError('aborted')
+  if (hostDown) throw new TypeError('fetch failed')
   if (target.includes('/revision')) {
     revisionReads.count += 1
     if (revisionAnswer === null) {
@@ -1426,6 +1429,99 @@ const realSleep = sleep
   }, 9000)
   check('the fallback path follows the switch too', imageOf(slow.element).props.src.includes('/w.png'))
   slow.unmount()
+}
+
+/* ── 12. A host that is not answering must not be hammered ─────────────── */
+// The role read used to swallow every failure into `null`, so its backoff branch
+// was unreachable: a host that started failing while the fast cadence was live
+// was asked for the session four times a second, indefinitely — and because the
+// cadence came from a captured `fast`, the slow fallback could not engage either.
+//
+// The read has to be driven by the counter to land on the fast cycle at all: with
+// a 404 on /revision this mascot is on the 1500ms fallback, and "it asked twice
+// in two seconds" would be true either way. So the counter is published here and
+// bumped, exactly as a live host does, and the assertion only counts once the
+// fast cycle has actually been observed.
+{
+  bumpRevision()
+  sessionAnswer = { ok: true, roleId: 'amiya' }
+  rolesAnswer = { ok: true, roles: [{ id: 'amiya', name: 'amiya', mascot: { image: '/persona-switcher/mascot-file/a.png', box: '512x768' } }] }
+  resetRequests()
+  const view = renderComponent(PersonaMascot, { ctx: mkCtx(mkSeat('session-down').service), t: IDENTITY, onShown: () => {} })
+  await realPoll('the mascot mounts before the host goes away', () => {
+    view.render()
+    return imageOf(view.element)?.props?.src?.includes('/a.png') === true
+  }, 8000)
+
+  // Drive the counter once, exactly as a `/role` switch does: the role effect
+  // re-runs with the fast cadence and keeps asking on its own from there.
+  resetRequests()
+  sessionAnswer = { ok: true, roleId: 'whale-girl' }
+  bumpRevision()
+  await realPoll('the counter puts the role read on the fast cycle', () => countOf('/session') >= 3, 6000)
+  const fastObserved = countOf('/session') >= 3
+  sessionAnswer = { ok: true, roleId: 'amiya' }
+
+  hostDown = true
+  // "It only asked once" is also what a torn-down loop looks like, so first prove
+  // the chain is alive: this one attempt is the failure that triggers the backoff,
+  // and it happens immediately.
+  const aliveBefore = countOf('/session')
+  await realPoll('the role read is still retrying during the outage', () => countOf('/session') > aliveBefore, 2000)
+  const stillAlive = countOf('/session') > aliveBefore
+  // Measure a fresh window AFTER that first failure. The healthy loop is now on
+  // its 8s retry cycle, so it makes no further attempt here; a loop that ignored
+  // the failure would still be on the 250ms cycle and make ~10.
+  const attemptsBefore = countOf('/session')
+  await realSleep(2500)
+  const attemptsDuring = countOf('/session') - attemptsBefore
+  hostDown = false
+  check(
+    'a dead host is backed off, not hammered',
+    fastObserved && stillAlive && attemptsDuring === 0,
+    `fast=${fastObserved}, alive=${stillAlive}, ${attemptsDuring} retr(ies) in the 2500ms after the first failure`
+  )
+
+  // And it must recover on its own, without a seat change. The failed read left
+  // the loop on the 8s retry cycle, which is inside this timeout.
+  sessionAnswer = { ok: true, roleId: 'whale-girl' }
+  rolesAnswer = { ok: true, roles: [{ id: 'whale-girl', name: 'whale-girl', mascot: { image: '/persona-switcher/mascot-file/w.png', box: '512x768' } }] }
+  await realPoll('the mascot resumes once the host answers again', () => {
+    view.render()
+    return imageOf(view.element)?.props?.src?.includes('/w.png') === true
+  }, 12000)
+  check('the polling recovered by itself', imageOf(view.element).props.src.includes('/w.png'))
+  view.unmount()
+}
+
+/* ── 13. The master switch must react to its own in-window broadcast ───── */
+// The settings page flips the switch, stores it and fires a CustomEvent. The
+// mascot's listener guarded on `event.key`, which a CustomEvent does not have,
+// so the guard passed it through as "a storage event for another key" and the
+// in-window switch was ignored until the page was reloaded.
+{
+  storage.delete(SHOWN_KEY)
+  noRevisionEndpoint()
+  sessionAnswer = { ok: true, roleId: 'amiya' }
+  rolesAnswer = { ok: true, roles: [{ id: 'amiya', name: 'amiya', mascot: { image: '/persona-switcher/mascot-file/a.png', box: '512x768' } }] }
+  resetRequests()
+  const view = renderComponent(MascotGate, { ctx: mkCtx(mkSeat('session-switch').service), t: IDENTITY, onShown: () => {} })
+  check('the gate is open to start with', view.element !== null)
+
+  // What the settings page does when the user turns the mascot off: write the
+  // key, then broadcast. The gate is a SEPARATE mount, so the event is the only
+  // thing that can tell it.
+  storage.set(SHOWN_KEY, '0')
+  windowStub.dispatchEvent(new FakeEvent(SHOWN_EVENT))
+  view.render()
+  check('a CustomEvent from this window turns it off (no key guard rejects it)', view.element === null)
+
+  storage.set(SHOWN_KEY, '1')
+  windowStub.dispatchEvent(new FakeEvent(SHOWN_EVENT))
+  view.render()
+  check('and the same event turns it back on', view.element !== null)
+  view.unmount()
+  storage.delete(SHOWN_KEY)
 }
 
 console.log(failures.length === 0 ? `mascot client OK (${passed} checks)` : `mascot client FAILED (${passed} passed)`)
