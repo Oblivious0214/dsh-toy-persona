@@ -21,6 +21,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   `scripts/simulate-client.mjs` now applies `lib/client.js` the way the host does and asserts the dock survives
   that cycle; `scripts/verify-mascot-client.mjs` asserts the disposer empties the dock but keeps the node.
 
+- **The artwork read keeps retrying after a failure, instead of stopping for good.** The `/roles` poll set its
+  next timer AFTER the `await`, so a single failed read (a restarting host, a transient error) ended the loop
+  permanently — it could only come back if the on-screen session changed. The visible symptom would have been
+  "I imported artwork for this role and the mascot never appeared". The loop now reschedules from its outcome
+  (5 s after success, 8 s after a failure), ignores a second read while one is in flight, and stops on unmount.
+  `scripts/verify-mascot-client.mjs` fails the artwork read once and asserts both the retry and that the backoff
+  is not a hot loop.
+
 - **The mascot now follows a `/role` switch immediately, without re-entering the conversation.** `/role <id>`
   rebinds a session inside the Host process and broadcasts nothing to the browser, so the client can only ask.
   It now asks a new counter endpoint, `GET /persona-switcher/revision` — one integer, no disk read — every
