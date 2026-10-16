@@ -552,22 +552,63 @@ const poll = async (label, predicate, timeoutMs = 3000) => {
   return check(label, false, `not observed within ${timeoutMs}ms`)
 }
 
+/**
+ * The same wait, on the REAL clock.
+ *
+ * The component's timers are stubbed so a test can let a 5s artwork poll fire
+ * instantly — but a check about a 250ms poll interval has to outlast real time,
+ * because the fake queue only knows the delays tests have registered. Sections
+ * 10 and 11 use this one.
+ */
+const realPoll = async (label, predicate, timeoutMs = 3000) => {
+  const started = Date.now()
+  while (Date.now() - started < timeoutMs) {
+    if (predicate()) return check(label, true)
+    await settle(20)
+  }
+  return check(label, false, `not observed within ${timeoutMs}ms`)
+}
+
 /* ── Fetch stub: records every request, serves canned host responses ─── */
 class FakeAbortError extends Error {}
 const requests = []
 let sessionAnswer = { ok: true, roleId: null }
 let rolesAnswer = { ok: true, roles: [] }
+/**
+ * The revision counter's answer, or `null` for "this host predates the
+ * endpoint" — the two cases the mascot has to tell apart.
+ *
+ * It is a getter so a test can bump it with `bumpRevision()` and have every
+ * later poll see the new value, exactly as the host does.
+ */
+let revisionAnswer = null
+const revisionReads = { count: 0 }
+const bumpRevision = () => {
+  revisionAnswer = { ok: true, revision: (revisionAnswer?.revision ?? 0) + 1 }
+}
+/** Treat the host as one without a counter endpoint (a 404). */
+const noRevisionEndpoint = () => {
+  revisionAnswer = null
+}
 
-const globalFetch = globalThis.fetch
 globalThis.fetch = async (url, options = {}) => {
-  requests.push(String(url))
+  const target = String(url)
+  requests.push(target)
   if (options.signal?.aborted) throw new FakeAbortError('aborted')
-  const payload = String(url).includes('/session') ? sessionAnswer : rolesAnswer
+  if (target.includes('/revision')) {
+    revisionReads.count += 1
+    if (revisionAnswer === null) {
+      return { ok: false, status: 404, json: async () => ({ ok: false, error: 'unknown endpoint' }) }
+    }
+    return { ok: true, status: 200, json: async () => revisionAnswer }
+  }
+  const payload = target.includes('/session') ? sessionAnswer : rolesAnswer
   return { ok: true, status: 200, json: async () => payload }
 }
 const countOf = (needle) => requests.filter((url) => url.includes(needle)).length
 const resetRequests = () => {
   requests.length = 0
+  revisionReads.count = 0
 }
 
 /* ── Tree helpers (walk the real element objects React.createElement made) ── */
@@ -646,6 +687,8 @@ const SIZE_MAX = mascot.SIZE_MAX
 const CHANGED_EVENT = mascot.CHANGED_EVENT
 const SHOWN_EVENT = mascot.SHOWN_EVENT
 const SIZE_EVENT = mascot.SIZE_EVENT
+const REVISION_POLL_MS = mascot.mascotInternals.REVISION_POLL_MS
+const REVISION_SLOW_MS = mascot.mascotInternals.REVISION_SLOW_MS
 const POS_EVENT = mascot.POS_EVENT
 const IDENTITY = (key) => key
 
@@ -1197,6 +1240,116 @@ check(
   check('flipping it back on brings it back', gate.element !== null)
   gate.unmount()
   localStorageStub.removeItem(SHOWN_KEY)
+}
+
+/* ── 10. A live /role switch reaches the mascot WITHOUT re-entering ─────── */
+// Sections 10 and 11 wait on the real clock: the thing under test IS a poll
+// interval, and the fake timer queue (built for the 5s artwork poll) cannot
+// express "fires in 250ms". Each view is unmounted when it is done, so a dead
+// mount's own slow poll cannot drift into the next section's observations.
+const realSleep = sleep
+{
+  // The reported bug: `/role amiya` inside a session left the mascot showing the
+  // previous role until the user left and re-entered the conversation, because
+  // the role was only read when the SEAT changed. A seat does not change when a
+  // session is rebound, so the role has to be re-read on its own cycle.
+  storage.delete(SHOWN_KEY)
+  noRevisionEndpoint()
+  resetRequests()
+  sessionAnswer = { ok: true, roleId: 'amiya' }
+  rolesAnswer = {
+    ok: true,
+    roles: [
+      { id: 'amiya', name: '阿米娅', mascot: { image: '/persona-switcher/mascot-file/amiya-abc.png', box: '512x768' } },
+      { id: 'whale-girl', name: '鲸鱼娘', mascot: { image: '/persona-switcher/mascot-file/whale-def.png', box: '400x600' } }
+    ]
+  }
+  const seat = mkSeat('session-live')
+  const view = renderComponent(PersonaMascot, { ctx: mkCtx(seat.service), t: IDENTITY, onShown: () => {} })
+  await realPoll('the mascot shows the role the session starts on', () => {
+    view.render()
+    return imageOf(view.element)?.props?.src?.includes('amiya-abc') === true
+  }, 8000)
+  check('the starting role is the one on screen', imageOf(view.element).props.src.includes('amiya-abc'))
+  const before = countOf('/session')
+
+  // Now the user switches role in the SAME session: only the answer changes,
+  // exactly as the host does it (the seat never moves).
+  sessionAnswer = { ok: true, roleId: 'whale-girl' }
+  await realPoll('a switch is picked up without re-entering the session', () => {
+    view.render()
+    return imageOf(view.element)?.props?.src?.includes('whale-def') === true
+  }, 9000)
+  check('the artwork follows the new role', imageOf(view.element).props.src.includes('whale-def'))
+  check('the accessible label follows too', String(layerOf(view.element).props['aria-label']).includes('鲸鱼娘'))
+  check('picking it up meant asking the host again', countOf('/session') > before, `${before} -> ${countOf('/session')}`)
+
+  // And the other direction: /role none must take it away just as promptly.
+  sessionAnswer = { ok: true, roleId: null }
+  await realPoll('clearing the role takes the mascot away', () => {
+    view.render()
+    return hiddenMascot(view.element)
+  }, 9000)
+  check('nothing keeps showing after /role none', imageOf(view.element) === undefined)
+  view.unmount()
+}
+
+/* ── 11. The revision counter: what makes a switch look instant ─────────── */
+{
+  const fastRole = (id, src) => ({ id, name: id, mascot: { image: src, box: '512x768' } })
+  storage.delete(SHOWN_KEY)
+  sessionAnswer = { ok: true, roleId: 'amiya' }
+  rolesAnswer = {
+    ok: true,
+    roles: [fastRole('amiya', '/persona-switcher/mascot-file/a.png'), fastRole('whale-girl', '/persona-switcher/mascot-file/w.png')]
+  }
+
+  // (a) A host WITH the counter: a live switch must be picked up within a poll
+  // cycle, i.e. almost immediately — NOT after the 1.5s role cycle.
+  revisionReads.count = 0
+  bumpRevision()
+  resetRequests()
+  const view = renderComponent(PersonaMascot, { ctx: mkCtx(mkSeat('session-fast').service), t: IDENTITY, onShown: () => {} })
+  await realPoll('the fast mascot mounts', () => {
+    view.render()
+    return imageOf(view.element)?.props?.src?.includes('/a.png') === true
+  }, 8000)
+  check('the fast mascot mounts', imageOf(view.element)?.props?.src?.includes('/a.png') === true)
+  await realPoll('the revision counter is being polled', () => revisionReads.count > 0, 4000)
+  const beforeCount = countOf('/session')
+  const startedAt = Date.now()
+  sessionAnswer = { ok: true, roleId: 'whale-girl' }
+  bumpRevision()
+  await realPoll('one counter cycle is enough to follow a switch', () => {
+    view.render()
+    return imageOf(view.element)?.props?.src?.includes('/w.png') === true
+  }, 4000)
+  const took = Date.now() - startedAt
+  check('the switch landed on a counter cycle, not a slow role cycle', took < REVISION_SLOW_MS, `${took}ms`)
+  check('and it cost one extra role read', countOf('/session') === beforeCount + 1, `${beforeCount} -> ${countOf('/session')}`)
+  check('the counter is polled several times a second', revisionReads.count >= 2, String(revisionReads.count))
+  view.unmount()
+
+  // (b) A host WITHOUT the counter (a 404): the mascot must keep working, just
+  // on the slow cycle. This is the supported older-host path.
+  noRevisionEndpoint()
+  // The session starts on `miya again: part (a) left the shared answer on
+  // whale-girl, and a test that waits for `.png has to be looking at a
+  // session bound to `miya or it waits forever.
+  sessionAnswer = { ok: true, roleId: 'amiya' }
+  resetRequests()
+  const slow = renderComponent(PersonaMascot, { ctx: mkCtx(mkSeat('session-slow').service), t: IDENTITY, onShown: () => {} })
+  await realPoll('the slow mascot mounts on a host without the counter', () => {
+    slow.render()
+    return imageOf(slow.element)?.props?.src?.includes('/a.png') === true
+  }, 8000)
+  sessionAnswer = { ok: true, roleId: 'whale-girl' }
+  await realPoll('a switch still arrives without the counter', () => {
+    slow.render()
+    return imageOf(slow.element)?.props?.src?.includes('/w.png') === true
+  }, 9000)
+  check('the fallback path follows the switch too', imageOf(slow.element).props.src.includes('/w.png'))
+  slow.unmount()
 }
 
 console.log(failures.length === 0 ? `mascot client OK (${passed} checks)` : `mascot client FAILED (${passed} passed)`)

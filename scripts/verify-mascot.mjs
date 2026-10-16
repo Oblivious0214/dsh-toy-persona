@@ -159,6 +159,44 @@ await writeFile(
 
 let handler
 const logger = { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} }
+/** Command definitions this row registered, by name. */
+const commands = new Map()
+
+/**
+ * A fake agent good enough for the real `/role` handler.
+ *
+ * The handler needs three things from an agent: a session id, an agent-scoped
+ * `systemPrompt` registry (the binding refuses to install a persona without one,
+ * by design), and nothing else. A registry that records what was registered lets
+ * a check confirm the persona actually changed.
+ */
+const makeAgent = (sessionId) => {
+  const sections = new Map()
+  const prompt = {
+    section: ({ name, text }) => {
+      sections.set(name, text)
+      return () => sections.delete(name)
+    }
+  }
+  return { agent: { session: { id: sessionId }, ctx: { get: (service) => (service === 'systemPrompt' ? prompt : undefined) } }, sections }
+}
+
+/**
+ * Run an effect factory the way Cordis does.
+ *
+ * A factory may be a generator that yields its registrations (`yield
+ * ctx.commands.register(...)`) — that is how this row registers `/role`, so a
+ * stub that only calls the function would leave the command unregistered and
+ * make the revision checks below unable to run the real switch path. Simple
+ * factories are still just called.
+ */
+const driveEffect = (factory) => {
+  const result = factory()
+  if (result === null || typeof result !== 'object' || typeof result.next !== 'function') return result
+  let step = result.next()
+  while (step.done !== true) step = result.next(step.value)
+  return step.value
+}
 
 /**
  * A host context with just enough surface for this row.
@@ -174,12 +212,20 @@ const ctx = {
   // calling the factory, the row's library scan starts exactly as it does on a
   // real deployment, including the race the write routes have to tolerate.
   effect: (factory) => {
-    factory()
+    driveEffect(factory)
     return () => {}
   },
   on: () => () => {},
   get: () => undefined,
-  commands: { register: () => () => {} },
+  // The `/role` command is registered through here, and the revision counter's
+  // MAIN bump lives in the switch path — so this guard has to be able to run the
+  // real handler rather than pretend the command does not exist.
+  commands: {
+    register: (definition) => {
+      commands.set(definition.name, definition)
+      return () => {}
+    }
+  },
   // The prompt catalogue and the diagnostic tool are declared on surfaces this
   // guard does not exercise; they only have to exist for `apply` to get as far
   // as registering the routes.
@@ -188,7 +234,7 @@ const ctx = {
   inject: (names, run) => {
     const scoped = {
       effect: (factory) => {
-        factory()
+        driveEffect(factory)
         return () => {}
       },
       get: (service) =>
@@ -247,6 +293,20 @@ const rolesOf = async () => {
  * case look like a failure.
  */
 const mascotOf = async (id) => (await rolesOf()).find((role) => role.id === id)?.mascot ?? null
+
+/** The revision the host is currently publishing. */
+const revisionNow = async () => {
+  const { status, value } = await call('GET', '/persona-switcher/revision')
+  if (status !== 200) throw new Error(`/revision answered ${status}`)
+  return value.revision
+}
+
+/** Run the real `/role` command as the harness would. */
+const runRole = async (sessionId, rawInput) => {
+  const definition = commands.get('role')
+  if (definition === undefined) throw new Error('the plugin registered no /role command')
+  return definition.handler({ agent: makeAgent(sessionId).agent, rawInput })
+}
 
 /** File names captured from a clean map, for the hand-edit cases below. */
 let cleanAmiya = ''
@@ -543,6 +603,77 @@ try {
     const { status, value } = await call('GET', '/persona-switcher/nope')
     assert.equal(status, 404)
     assert.match(value.error, /unknown endpoint/)
+  })
+
+  /* ── The revision counter: how a live `/role` switch reaches the browser ── */
+  // Nothing is broadcast to the web client when a session is rebound, so the
+  // on-screen mascot polls this counter and only re-reads the role when it moves.
+  // If these two bumps are missing, the mascot silently stops following `/role`
+  // — the exact bug that shipped in 0.2.0.
+
+  await checkAsync('/revision publishes a number', async () => {
+    const revision = await revisionNow()
+    assert.equal(typeof revision, 'number')
+    assert.ok(Number.isFinite(revision))
+  })
+
+  await checkAsync('/role <id> moves the revision (this is the bump that matters)', async () => {
+    const before = await revisionNow()
+    const result = await runRole('session-revision-one', 'amiya')
+    assert.equal(result.kind, 'success', result.text)
+    const after = await revisionNow()
+    assert.ok(after > before, `revision did not move: ${before} -> ${after}`)
+  })
+
+  await checkAsync('/role none moves it too', async () => {
+    await runRole('session-revision-two', 'whale-girl')
+    const before = await revisionNow()
+    const result = await runRole('session-revision-two', 'none')
+    assert.equal(result.kind, 'success', result.text)
+    assert.ok((await revisionNow()) > before)
+  })
+
+  await checkAsync('re-applying the role already bound is not a change, so it does not move', async () => {
+    const result = await runRole('session-revision-three', 'amiya')
+    assert.equal(result.kind, 'success', result.text)
+    const before = await revisionNow()
+    await runRole('session-revision-three', 'amiya')
+    assert.equal(await revisionNow(), before, 'a no-op switch must not look like a change')
+  })
+
+  await checkAsync('an unknown role bumps nothing and answers with the error', async () => {
+    const before = await revisionNow()
+    const result = await runRole('session-revision-four', 'no-such-role')
+    assert.equal(result.kind, 'error')
+    assert.equal(await revisionNow(), before)
+  })
+
+  await checkAsync('importing artwork moves it', async () => {
+    const before = await revisionNow()
+    const { status } = await call('POST', '/persona-switcher/mascot?role=amiya', {
+      image: asDataUrl(artwork.webp, 'image/webp'),
+      box: '20x30'
+    })
+    assert.equal(status, 200)
+    assert.ok((await revisionNow()) > before)
+  })
+
+  await checkAsync('clearing artwork moves it', async () => {
+    const before = await revisionNow()
+    const { status } = await call('DELETE', '/persona-switcher/mascot?role=amiya')
+    assert.equal(status, 200)
+    assert.ok((await revisionNow()) > before)
+  })
+
+  await checkAsync('reading the revision touches no file', async () => {
+    // It is polled several times a second by every open window, so it must stay
+    // an in-memory answer: the role read is the expensive one, and this exists
+    // precisely so that read can be rare.
+    const mapBefore = await readFile(mapFile, 'utf8')
+    const stateBefore = await readFile(stateFile, 'utf8')
+    for (let i = 0; i < 5; i += 1) await revisionNow()
+    assert.equal(await readFile(mapFile, 'utf8'), mapBefore)
+    assert.equal(await readFile(stateFile, 'utf8'), stateBefore)
   })
 } finally {
   await new Promise((resolve) => server.close(resolve))

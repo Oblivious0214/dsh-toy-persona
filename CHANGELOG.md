@@ -4,6 +4,33 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.2.1] - 2026-10-16
+
+### Fixed
+
+- **The mascot now follows a `/role` switch immediately, without re-entering the conversation.** `/role <id>`
+  rebinds a session inside the Host process and broadcasts nothing to the browser, so the client can only ask.
+  It now asks a new counter endpoint, `GET /persona-switcher/revision` — one integer, no disk read — every
+  250 ms, and re-reads the role only when the number MOVES. The counter is bumped in exactly the two places the
+  mascot draws from: a session's role binding (the `/role` path, `/role none` included) and the artwork map
+  (import, clear, or a hand-edited `mascot-map.json`). A switch therefore reaches the screen in about a quarter
+  of a second, and the previous behaviour — read the role once, when the seat changed — is gone. Only a CHANGE
+  republishes, so an identical answer every cycle neither re-renders the mascot nor restarts the artwork's fade.
+  Nothing is scheduled while the tab is hidden.
+- **A host without the counter endpoint still works.** An older build answers 404, which the client treats as a
+  normal outcome rather than an error: it falls back to re-reading the role every 1.5 s (backing off to 8 s when
+  a read fails) and still catches a live switch within a few seconds. No configuration, no version negotiation.
+
+  Found on a real machine (DSH 0.2.0-rc.2 + Windows desktop, 2026-10-16) after 0.2.0 was installed; the host side
+  was already correct (`GET /session?session=` returned the new role), so the first fix was client-only. The
+  counter endpoint was added afterwards, once polling the role itself proved too coarse to feel instant.
+
+  `scripts/verify-mascot-client.mjs` covers both paths: a switch that changes only the host's answer, with the
+  seat untouched, must change the artwork and the accessible label; with a counter it must land within one
+  counter cycle, and without one it must still land. `scripts/verify-mascot.mjs` covers the bump itself by
+  running the real `/role` handler: a switch moves the revision, `/role none` moves it, re-applying the role
+  already bound does NOT, an unknown role does not, and reading the counter touches no file.
+
 ## [0.2.0] - 2026-10-16
 
 ### Added
