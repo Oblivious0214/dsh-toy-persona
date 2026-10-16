@@ -6,6 +6,7 @@ import {
   Switch,
   settingsTextField
 } from '@deepseek-ai/dsh-client-ui-primitives'
+import { installMascot } from './mascot.jsx'
 
 /**
  * The persona switcher's settings page, browser half: the role library over
@@ -1196,8 +1197,8 @@ const PersonaSwitcherSection = (props) => {
 }
 
 /**
- * Mount the persona switcher's settings page while the Host serves its
- * namespace.
+ * Mount the persona switcher's settings page and the on-screen mascot while
+ * the Host serves its namespace.
  * @param ctx - the browser plugin context.
  */
 export function apply(ctx) {
@@ -1205,6 +1206,10 @@ export function apply(ctx) {
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'persona-switcher: dictionaries')
   installStyle()
   ctx.effect(() => installPersonaNavIcon(t) || undefined, 'persona-switcher: nav icon')
+  // The mascot rides in this same bundle: the loader allows exactly one factory
+  // per package (a second entry point is fatal), so it is imported and installed
+  // here rather than built as its own bundle.
+  ctx.effect(() => installMascot(ctx, t), 'persona-switcher: mascot')
   const card = new PersonaSwitcherCardController(ctx.configForms.get(CONFIG_KEY), t)
   ctx.effect(
     () => () => {
@@ -1266,7 +1271,8 @@ const zh = {
   saveFailed: '保存失败',
   saving: '保存中…',
   overridden: '已由部署配置覆盖',
-  reset: '重置'
+  reset: '重置',
+  mascotAria: '当前角色吉祥物'
 }
 
 const en = {
@@ -1309,5 +1315,6 @@ const en = {
   saveFailed: 'Save failed',
   saving: 'Saving…',
   overridden: 'Overridden by the deployment',
-  reset: 'Reset'
+  reset: 'Reset',
+  mascotAria: 'Current role mascot'
 }

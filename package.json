@@ -58,8 +58,8 @@
     "build": "node scripts/build-client.mjs",
     "build:client": "node scripts/build-client.mjs",
     "verify": "node scripts/verify-bundle.mjs",
-    "test": "node scripts/simulate-client.mjs && node scripts/verify-host-binding.mjs && node scripts/verify-session-state.mjs && node scripts/verify-created-bind.mjs && node scripts/verify-role-notice.mjs && node scripts/verify-mascot.mjs",
-    "prepublishOnly": "node scripts/build-client.mjs && node scripts/verify-bundle.mjs && node scripts/verify-host-binding.mjs && node scripts/verify-session-state.mjs && node scripts/verify-created-bind.mjs && node scripts/verify-role-notice.mjs && node scripts/verify-mascot.mjs"
+    "test": "node scripts/simulate-client.mjs && node scripts/verify-host-binding.mjs && node scripts/verify-session-state.mjs && node scripts/verify-created-bind.mjs && node scripts/verify-role-notice.mjs && node scripts/verify-mascot.mjs && node scripts/verify-mascot-client.mjs",
+    "prepublishOnly": "node scripts/build-client.mjs && node scripts/verify-bundle.mjs && node scripts/verify-host-binding.mjs && node scripts/verify-session-state.mjs && node scripts/verify-created-bind.mjs && node scripts/verify-role-notice.mjs && node scripts/verify-mascot.mjs && node scripts/verify-mascot-client.mjs"
   },
   "dsh": {
     "bundle": {

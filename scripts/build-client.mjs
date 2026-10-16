@@ -2,9 +2,9 @@
  * Build the web client bundle.
  *
  * Bundles `src/client/index.jsx` with esbuild (browser platform, CJS output;
- * `react`, `react/jsx-runtime`, `react-dom` and
- * `@deepseek-ai/dsh-client-ui-primitives` stay external — the host injects
- * them at runtime) and wraps the result in the
+ * `react`, `react/jsx-runtime`, `react-dom`, `react-dom/client` and
+ * `@deepseek-ai/dsh-client-ui-primitives` stay external — the host injects them
+ * at runtime) and wraps the result in the
  * `window.__ModuleLoader__.load({ id, factory })` shell the DeepSeek Harness
  * web host expects.
  *
@@ -53,7 +53,13 @@ await build({
   platform: 'browser',
   target: ['es2020'],
   jsx: 'automatic',
-  external: ['react', 'react-dom', 'react/jsx-runtime', '@deepseek-ai/dsh-client-ui-primitives'],
+  external: [
+    'react',
+    'react-dom',
+    'react-dom/client',
+    'react/jsx-runtime',
+    '@deepseek-ai/dsh-client-ui-primitives'
+  ],
   outfile: tmp,
   logLevel: 'info'
 })
