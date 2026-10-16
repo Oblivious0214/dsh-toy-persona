@@ -585,6 +585,10 @@ const PersonaMascot = (props) => {
     let cancelled = false
     let timer = null
     let last = null
+    // A hidden window is not being looked at, so it does not need quarter-second
+    // answers: it falls back to the slow cycle (and asks once on the way back,
+    // so returning to the window is still immediate).
+    const cadence = () => (document.visibilityState === 'hidden' ? REVISION_SLOW_MS : REVISION_POLL_MS)
     const ask = async () => {
       const payload = await api('/revision', undefined)
       if (cancelled) return
@@ -608,13 +612,20 @@ const PersonaMascot = (props) => {
           ok = false
         }
         if (cancelled) return
-        arm(ok ? REVISION_POLL_MS : REVISION_SLOW_MS)
+        arm(ok ? cadence() : REVISION_SLOW_MS)
       }, delay)
     }
-    arm(REVISION_POLL_MS)
+    arm(cadence())
+    const onVisibility = () => {
+      if (document.visibilityState !== 'visible') return
+      if (timer !== null) window.clearTimeout(timer)
+      arm(0)
+    }
+    document.addEventListener('visibilitychange', onVisibility)
     return () => {
       cancelled = true
       if (timer !== null) window.clearTimeout(timer)
+      document.removeEventListener('visibilitychange', onVisibility)
     }
   }, [])
 

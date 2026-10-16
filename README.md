@@ -319,6 +319,14 @@ npm run verify     # 检查不变量：bundle id、patch 行、发布配置、�
 npm test           # 无网络测试：bundle 模拟 + 宿主绑定不变量 + persona 绑定不变量 + 会话状态持久化 + 创建期绑定（重启后第一步即生效）+ role-change 声明 + 吉祥物 host 侧 + 吉祥物 client 侧
 ```
 
+> **开发时用 `file:` 装插件的话：`npm run build` 之后必须 `npm run install:desktop`。**
+> `file:` 装出来的是**拷贝**，而且 pnpm 对「目录依赖」记录的 `specifier` 与 `version` 都是 `file:…`
+> （重建不会让它变），于是它判定"依赖已是最新"、**一个文件都不换**。实测：pnpm 报 `Done`、已装目录的
+> `lib/` mtime 也是新的，但里面 `package.json` 还是旧版本、`client.js` 还是旧字节。
+> `install-desktop.mjs` 因此自己把构建产物同步过去，并**逐字节校验**版本与 `lib/` 关键文件，
+> 全部一致才打 `PASS`。它用 DSH 自带运行时的 `node` + `pnpm`（profile 的 PATH 里没有 pnpm），
+> 且只对这一条命令放宽 pnpm 的 minimum-release-age 策略。**host 侧改完要完全重启 DSH**（刷新不够）。
+
 （`npm test` 实际串起 7 个脚本：`simulate-client`、`verify-host-binding`、`verify-session-state`、
 `verify-created-bind`、`verify-role-notice`、`verify-mascot`、`verify-mascot-client`；
 `prepublishOnly` 会把它们全跑一遍。其中 `verify-mascot-client` 在 Node 里驱动真实组件——自建

@@ -250,8 +250,25 @@ const documentStub = {
   mounted: new Map(),
   createElement: (tag) => new FakeElement(tag),
   getElementById: (id) => documentStub.registry.get(id) ?? null,
-  addEventListener: () => {},
-  removeEventListener: () => {}
+  /**
+   * Document-level listeners and the page's visibility, because the mascot's
+   * fast poll backs off while the tab is hidden. A stub that swallowed these
+   * would leave that branch untested — and, worse, would hide a component that
+   * forgot to stop polling in a background tab.
+   */
+  visibilityState: 'visible',
+  listeners: new Map(),
+  addEventListener: (name, listener) => {
+    if (!documentStub.listeners.has(name)) documentStub.listeners.set(name, new Set())
+    documentStub.listeners.get(name).add(listener)
+  },
+  removeEventListener: (name, listener) => {
+    documentStub.listeners.get(name)?.delete(listener)
+  },
+  dispatchEvent: (event) => {
+    for (const listener of [...(documentStub.listeners.get(event.type) ?? [])]) listener(event)
+    return true
+  }
 }
 /** Map a React element onto a stable node, creating it on first sight. */
 const nodeFor = (element, into = documentStub.mounted) => {
@@ -1328,6 +1345,18 @@ const realSleep = sleep
   check('the switch landed on a counter cycle, not a slow role cycle', took < REVISION_SLOW_MS, `${took}ms`)
   check('and it cost one extra role read', countOf('/session') === beforeCount + 1, `${beforeCount} -> ${countOf('/session')}`)
   check('the counter is polled several times a second', revisionReads.count >= 2, String(revisionReads.count))
+
+  // A hidden tab backs off — the mascot is not being looked at — and coming back
+  // asks at once, so returning to the window is still instant.
+  const hiddenBefore = revisionReads.count
+  documentStub.visibilityState = 'hidden'
+  await realSleep(700)
+  const hiddenGrew = revisionReads.count - hiddenBefore
+  check('a hidden tab stops the fast poll', hiddenGrew <= 1, `${hiddenGrew} reads in 700ms`)
+  documentStub.visibilityState = 'visible'
+  documentStub.dispatchEvent(new FakeEvent('visibilitychange'))
+  await realSleep(120)
+  check('coming back to the tab asks again immediately', revisionReads.count > hiddenBefore + hiddenGrew, String(revisionReads.count))
   view.unmount()
 
   // (b) A host WITHOUT the counter (a 404): the mascot must keep working, just
