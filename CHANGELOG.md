@@ -26,7 +26,14 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   It now uses the rope's `1.06` and `120ms ease` verbatim. The growth stays on the IMAGE, never on the dragged
   box, so the box keeps the size the drag gave it, the position maths never sees the growth, and the element does
   not move. `scripts/verify-mascot-client.mjs` pins the value, the animation, and "the growth is not on the box".
-  A `prefers-reduced-motion` user still gets no scaling at all.
+- **Reduced motion no longer switches the growth OFF.** The `prefers-reduced-motion: reduce` branch also set
+  `transform: none` on the hover rule, which cancelled the effect entirely for every such user. `reduce` is not
+  the rare case it sounds like: Chromium infers it from Windows' own animation setting, so a machine with
+  "show animations" off reported `reduce` and the mascot never responded to the pointer at all. Living proof from
+  the real page: `matchMedia('(prefers-reduced-motion: reduce)').matches` was `true` and the artwork's computed
+  `transform` stayed `none` even while `matches(':hover')` was `true`. The branch now only drops the 120 ms
+  easing (the growth becomes instant) and never the growth itself — which is also all the rope does.
+  `scripts/verify-mascot-client.mjs` asserts both halves, so the cancellation cannot come back.
 
   Found on a real machine (DSH 0.2.0-rc.2 + Windows desktop, 2026-10-16) after 0.2.0 was installed; the host side
   was already correct (`GET /session?session=` returned the new role), so the first fix was client-only. The

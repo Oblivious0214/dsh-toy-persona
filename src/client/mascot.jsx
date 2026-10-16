@@ -411,10 +411,16 @@ const STYLE_TEXT = `
 .ps-mascot:hover .ps-mascot__art {
   transform: scale(1.06);
 }
+/* A user who asked for reduced motion gets the SAME hover growth, applied
+   instantly instead of animated. An earlier version cancelled the transform
+   here, which silently removed the effect for every such user — and "reduce"
+   is not rare: Chromium infers it from Windows' own animation setting, so a
+   machine with "show animations" off reported reduce and the mascot stopped
+   responding to the pointer entirely. Growing a little is the feedback; the
+   120ms of easing is the part that is optional. */
 @media (prefers-reduced-motion: reduce) {
   .ps-mascot { transition: none; }
   .ps-mascot__art { transition: none; }
-  .ps-mascot:hover .ps-mascot__art { transform: none; }
 }
 `
 

@@ -789,6 +789,19 @@ check(
     'the growth is on the image, never on the dragged box',
     !/\.ps-mascot:hover\s*\{[^}]*transform:\s*scale/.test(styleText)
   )
+  // The reduced-motion branch must NOT cancel the growth. It exists to drop the
+  // 120ms of easing, not the feedback itself — cancelling it removed the effect
+  // for every user whose system reports reduce, which is how this shipped broken
+  // once (found on a real machine: prefers-reduced-motion: reduce was matching,
+  // so the artwork never grew). NOTE: this file is a template literal, so no
+  // backticks may appear in these comments.
+  {
+    const block = styleText.slice(styleText.indexOf('prefers-reduced-motion'))
+    const body = block.slice(block.indexOf('{') + 1, block.lastIndexOf('}'))
+    check('the reduced-motion branch still exists', block.length > 0)
+    check('reduced motion does not cancel the hover growth', !/transform:\s*none/.test(body), body.trim())
+    check('reduced motion does drop the easing', /transition:\s*none/.test(body))
+  }
   // The real renderer (not the hook host) has to paint something into the dock,
   // or "installMascot creates a dock" would be true of an empty div.
   await poll('the real React root paints into the dock', () => dock.childNodes.length > 0, 3000)
@@ -1373,10 +1386,9 @@ const realSleep = sleep
 
   // (b) A host WITHOUT the counter (a 404): the mascot must keep working, just
   // on the slow cycle. This is the supported older-host path.
-  noRevisionEndpoint()
-  // The session starts on `miya again: part (a) left the shared answer on
-  // whale-girl, and a test that waits for `.png has to be looking at a
-  // session bound to `miya or it waits forever.
+  // The session starts on the amiya role again: part (a) left the shared
+  // answer on whale-girl, and this check waits for a.png, so it has to be
+  // looking at a session bound to amiya or it waits forever.
   sessionAnswer = { ok: true, roleId: 'amiya' }
   resetRequests()
   const slow = renderComponent(PersonaMascot, { ctx: mkCtx(mkSeat('session-slow').service), t: IDENTITY, onShown: () => {} })
