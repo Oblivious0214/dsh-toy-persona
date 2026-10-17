@@ -4,7 +4,7 @@
 [![npm](https://img.shields.io/npm/v/dsh-persona-switcher.svg)](https://www.npmjs.com/package/dsh-persona-switcher)
 [![license](https://img.shields.io/npm/l/dsh-persona-switcher.svg)](LICENSE)
 
-**会话中途只换「说话的人」，不碰「手里的工具」。**
+**会话中途换「说话的人」**
 
 DeepSeek Harness 的人设切换插件：把一个角色的**人设与语言风格**装进当前会话，随时可换、
 随时可退；工具集、技能、模型选择全程保持宿主默认不变。
@@ -47,10 +47,6 @@ DeepSeek Harness 的人设切换插件：把一个角色的**人设与语言风�
 | 不遮蔽宿主的 persona 前缀 | 那是部署写的身份行（`You are a coding agent powered by the {{model}} model.`）——覆盖它模型就不知道自己跑在哪个模型上；角色以独立 section 加在它后面 |
 | 不提供自主切换工具（`switch_to_role` 之类） | 切换只经 `/role` 命令，避免模型自己改人设 |
 | 不读角色级 `tools` / `denyTools` / `skillsDir` / `model` 字段 | 这些字段即使写了也一律忽略，行为可预测 |
-| 吉祥物不吸附边缘、不自动归位 | 拖到哪就待在哪，「拖了一次自己跑回去」比没拖动更烦人 |
-
-需要「一条命令同时切人设 + 能力 + 技能」的完整版能力时，请改用 `dsh-role-switcher`；
-本插件是它的最小化派生：两者可以并存，只是「一条命令同时换能力」的能力只在前者身上。
 
 ## 它动你磁盘上的哪些文件（权能边界）
 
