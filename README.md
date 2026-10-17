@@ -300,11 +300,10 @@ prompt registry 每一步重新组装系统节点并发出 `system-prompt/change
 - 依赖注入 `commands` / `systemPrompt` / `tools`（peer 全部 optional）；`settings` 与宿主
   `agentPresets` 只是可选读，后者仅用于 `role_probe` 的诊断输出。
 - 与 `dsh-role-switcher` 等其它人设/能力插件互不影响：本插件不注册 preset，也不占用角色 id。
-- **与 `dsh-plugin-wallpaper-engine` 同屏共存**（两者一起用是有意支持的组合）：各自的 DOM id 与
-  `<style>` id 不重名、`localStorage` 命名空间独立、吉祥物 z-index `995` 压在壁纸拉绳 `996` 之下、
-  **吉祥物样式里没有任何 CSS `filter`**（壁纸插件踩过「白屏闪一下」的坑，这里不重蹈）、
-  吉祥物**不监听 `keydown`**（Esc 仍只归壁纸插件的抽屉用）、**不注册 `contextmenu` 拦截**
-  （右键仍能出系统菜单）、也**不往 `sidebarRight` 注册任何东西**——只读它的 `mounted` 快照。
+- **可与其它屏幕插件同屏共存**：本插件用独立的 DOM id、独立的 `<style>` id 与独立的 `localStorage`
+  命名空间（`dsh-persona-switcher:*`），吉祥物样式里**没有任何 CSS `filter`**（避免合成层反复重绘），
+  吉祥物**不监听 `keydown`**（Esc 留给别的插件用）、**不注册 `contextmenu` 拦截**（右键仍出系统菜单）、
+  也**不往 `sidebarRight` 注册任何东西**——只读它的 `mounted` 快照。
 
 ## 开发
 

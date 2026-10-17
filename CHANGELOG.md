@@ -6,6 +6,16 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [0.2.1] - 2026-10-16
 
+### Added
+
+- **The mascot now follows `/role` immediately.** Switching a role used to change the artwork only after you
+  left the session and came back, because the client read the bound role once, when the on-screen session
+  changed. It now asks a new counter endpoint, `GET /persona-switcher/revision` — one integer, no disk read —
+  every 250 ms, and re-reads the role only when the number moves. A switch therefore reaches the screen in
+  about a quarter of a second. The endpoint is described under Fixed below.
+- **The mascot reacts to the pointer.** Hovering the artwork scales it to `1.06` over a 120 ms ease — a small
+  confirmation that it is interactive, on the image only, never on the dragged box.
+
 ### Fixed
 
 - **A configuration value can no longer take the Web GUI down.** `routePrefix` was normalized but never validated,
@@ -93,19 +103,18 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 - **A host without the counter endpoint still works.** An older build answers 404, which the client treats as a
   normal outcome rather than an error: it falls back to re-reading the role every 1.5 s (backing off to 8 s when
   a read fails) and still catches a live switch within a few seconds. No configuration, no version negotiation.
-- **The mascot grows slightly under the pointer, matching `dsh-plugin-wallpaper-engine`.** The rope uses
-  `.we-rope:hover .we-rope__art { transform: scale(1.06) }` on a 120 ms transition; the mascot's own hover was a
-  barely-visible `scale(1.03)` with a different easing, so the two plugins side by side did not behave the same.
-  It now uses the rope's `1.06` and `120ms ease` verbatim. The growth stays on the IMAGE, never on the dragged
-  box, so the box keeps the size the drag gave it, the position maths never sees the growth, and the element does
-  not move. `scripts/verify-mascot-client.mjs` pins the value, the animation, and "the growth is not on the box".
+- **The mascot grows slightly under the pointer.** The artwork uses `transform: scale(1.06)` on a 120 ms
+  ease, so the pointer gets a small, immediate confirmation that the mascot is interactive. The growth stays on
+  the IMAGE, never on the dragged box, so the box keeps the size the drag gave it, the position maths never sees
+  the growth, and the element does not move. `scripts/verify-mascot-client.mjs` pins the value, the animation,
+  and "the growth is not on the box".
 - **Reduced motion no longer switches the growth OFF.** The `prefers-reduced-motion: reduce` branch also set
   `transform: none` on the hover rule, which cancelled the effect entirely for every such user. `reduce` is not
   the rare case it sounds like: Chromium infers it from Windows' own animation setting, so a machine with
   "show animations" off reported `reduce` and the mascot never responded to the pointer at all. Living proof from
   the real page: `matchMedia('(prefers-reduced-motion: reduce)').matches` was `true` and the artwork's computed
   `transform` stayed `none` even while `matches(':hover')` was `true`. The branch now only drops the 120 ms
-  easing (the growth becomes instant) and never the growth itself — which is also all the rope does.
+  easing (the growth becomes instant) and never the growth itself — which is also all the image does.
   `scripts/verify-mascot-client.mjs` asserts both halves, so the cancellation cannot come back.
 
   Found on a real machine (DSH 0.2.0-rc.2 + Windows desktop, 2026-10-16) after 0.2.0 was installed; the host side
@@ -171,8 +180,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Notes
 
-- Coexists with `dsh-plugin-wallpaper-engine`: distinct dock and stylesheet ids, a distinct `localStorage`
-  namespace, z-index 995 (under the rope's 996), no CSS `filter`, no `keydown`/`contextmenu` handlers, and no
+- Coexists with other on-screen plugins: distinct dock and stylesheet ids, a distinct `localStorage`
+  namespace, its own z-index band, no CSS `filter`, no `keydown`/`contextmenu` handlers, and no
   registration into `sidebarRight` — the seat snapshot is read, never written.
 
 ## [0.1.9] - 2026-10-13
