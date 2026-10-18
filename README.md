@@ -12,6 +12,8 @@ DeepSeek Harness 的人设切换插件：把一个角色的**人设与语言风�
 > Mid-session **persona-only** switching for DeepSeek Harness: swap the model's identity and
 > speaking style without touching its tools, skills, or model selection.
 
+> **环境要求**：DSH `>= 0.2.0-rc.1`（兼容 `0.2.1-rc.x`）。
+
 ![人设怎么进入提示词：/role → sessions.json → agent/created 绑定 → persona-switcher:persona prompt section](docs/how-it-works.svg)
 
 ## 它能做什么
@@ -303,7 +305,7 @@ prompt registry 每一步重新组装系统节点并发出 `system-prompt/change
 
 ## 兼容性
 
-- DSH `>= 0.2.0-rc.1`；已在 DSH `0.2.0-rc.2` + Windows 桌面端实机验证。
+- DSH `>= 0.2.0-rc.1`；
 - 依赖注入 `commands` / `systemPrompt` / `tools`（peer 全部 optional）；`settings` 与宿主
   `agentPresets` 只是可选读，后者仅用于 `role_probe` 的诊断输出。
 - 与 `dsh-role-switcher` 等其它人设/能力插件互不影响：本插件不注册 preset，也不占用角色 id。
