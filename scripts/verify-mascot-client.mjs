@@ -316,6 +316,8 @@ const componentClearTimeout = (id) => {
 }
 
 const windowListeners = new Map()
+/** Toggle for the `prefers-reduced-motion` query the mascot's flip consults. */
+const reducedMotion = { matches: false }
 const windowStub = {
   innerWidth: 1280,
   innerHeight: 800,
@@ -336,7 +338,12 @@ const windowStub = {
   },
   setTimeout: componentSetTimeout,
   clearTimeout: componentClearTimeout,
-  document: documentStub
+  document: documentStub,
+  // The mascot asks this to decide whether a replacement turns or swaps in
+  // place. A real browser answers from the OS animation setting; here a test
+  // flips it. Absent matchMedia must read as "no reduce" (the default), so the
+  // stub starts false and only the reduce query ever answers true.
+  matchMedia: (query) => ({ matches: reducedMotion.matches && String(query).includes('prefers-reduced-motion') })
 }
 documentStub.defaultView = windowStub
 /**
@@ -657,6 +664,22 @@ const layerOf = (element) => findNodes(element, 'div')[0]
 const imageOf = (element) => findNodes(element, 'img')[0]
 
 /**
+ * Does any painted `<img>` carry this substring in its `src`?
+ *
+ * A role REPLACEMENT is shown by turning a card whose front face is the old art
+ * and back face the new one, so for ~1s the new art is on screen but is NOT the
+ * first `<img>` in the tree. A poll that only looked at `imageOf` would miss it
+ * and wait for the turn to commit — conflating detection latency with the
+ * animation. This asks the honest question: is that art visible right now,
+ * by whichever face is showing it?
+ *
+ * @param element - the mascot root element.
+ * @param needle - the substring to look for in a painted src.
+ */
+const paintsSrc = (element, needle) =>
+  findNodes(element, 'img').some((node) => String(node.props?.src ?? '').includes(needle))
+
+/**
  * Is the mascot invisible right now?
  *
  * The outer box stays mounted on purpose: it carries the cross-fade (`opacity`)
@@ -691,6 +714,8 @@ const {
   readSize,
   writeSize,
   clampSize,
+  readMotion,
+  writeMotion,
   mascotInternals: {
     artOf,
     clearPos,
@@ -698,22 +723,30 @@ const {
     fitToViewport,
     followSnapshot,
     isSeatService,
+    normalizeMotion,
+    planFlip,
     positionFromStorage,
+    reducedMotion: motionReducer,
     seatIdOf,
     clamp,
     MascotGate,
-    PersonaMascot
+    PersonaMascot,
+    FLIP_TOTAL_MS,
+    FLIP_COMMIT_MARGIN_MS
   }
 } = mascot
 
 const SHOWN_KEY = mascot.SHOWN_KEY
 const POS_KEY = mascot.POS_KEY
 const SIZE_KEY = mascot.SIZE_KEY
+const MOTION_KEY = mascot.MOTION_KEY
+const MOTION_VALUES = mascot.MOTION_VALUES
 const SIZE_MIN = mascot.SIZE_MIN
 const SIZE_MAX = mascot.SIZE_MAX
 const CHANGED_EVENT = mascot.CHANGED_EVENT
 const SHOWN_EVENT = mascot.SHOWN_EVENT
 const SIZE_EVENT = mascot.SIZE_EVENT
+const MOTION_EVENT = mascot.MOTION_EVENT
 const REVISION_POLL_MS = mascot.mascotInternals.REVISION_POLL_MS
 const REVISION_SLOW_MS = mascot.mascotInternals.REVISION_SLOW_MS
 // The client's API prefix and the host's default `routePrefix` are two copies of
@@ -762,14 +795,43 @@ check('a corrupt switch value stays on (never silently hides)', readShown() === 
 localStorageStub.removeItem(SHOWN_KEY)
 check(
   'own storage keys, namespaced away from the wallpaper engine',
-  SHOWN_KEY.startsWith('dsh-persona-switcher:') && POS_KEY.startsWith('dsh-persona-switcher:'),
-  `${SHOWN_KEY} / ${POS_KEY}`
+  SHOWN_KEY.startsWith('dsh-persona-switcher:') && POS_KEY.startsWith('dsh-persona-switcher:') && MOTION_KEY.startsWith('dsh-persona-switcher:'),
+  `${SHOWN_KEY} / ${POS_KEY} / ${MOTION_KEY}`
 )
 check(
   'no key or event name collides with the wallpaper engine',
-  [SHOWN_KEY, POS_KEY, CHANGED_EVENT, SHOWN_EVENT].every((name) => !name.includes('wallpaper')),
-  [SHOWN_KEY, POS_KEY, CHANGED_EVENT, SHOWN_EVENT].join(' ')
+  [SHOWN_KEY, POS_KEY, MOTION_KEY, CHANGED_EVENT, SHOWN_EVENT, MOTION_EVENT].every((name) => !name.includes('wallpaper')),
+  [SHOWN_KEY, POS_KEY, MOTION_KEY, CHANGED_EVENT, SHOWN_EVENT, MOTION_EVENT].join(' ')
 )
+
+/* ── 1b. The animation preference (system / always / never) ──────────────
+ * The plugin-level override that lets a machine whose OS animation switch is
+ * off still see the turn — and lets anyone silence it where the OS allows it.
+ * The system reading (matchMedia) is only consulted for 'system'.
+ */
+{
+  check('the animation preference defaults to following the system', readMotion() === 'system', readMotion())
+  check('always and never are the two overrides', normalizeMotion('always') === 'always' && normalizeMotion('never') === 'never')
+  check('anything else folds onto system (a corrupt value never forces a choice)', normalizeMotion('garbage') === 'system' && normalizeMotion(null) === 'system' && normalizeMotion('') === 'system')
+  check('writeMotion normalizes what it stores', writeMotion('always') === 'always' && writeMotion('nonsense') === 'system')
+  check('a stored preference is read back', (storage.set(MOTION_KEY, 'never'), readMotion() === 'never'))
+
+  // The decision itself, against both system readings. The stub's matchMedia
+  // answers from `reducedMotion.matches` for the reduce query only.
+  storage.delete(MOTION_KEY)
+  reducedMotion.matches = false
+  check("system allows animation + 'system' ⇒ turn", motionReducer() === false)
+  reducedMotion.matches = true
+  check('system reduce + system ⇒ no turn', motionReducer() === true)
+  storage.set(MOTION_KEY, 'always')
+  reducedMotion.matches = true
+  check("'always' overrides system reduce ⇒ turn anyway", motionReducer() === false)
+  storage.set(MOTION_KEY, 'never')
+  reducedMotion.matches = false
+  check("'never' overrides system allow ⇒ no turn", motionReducer() === true)
+  storage.delete(MOTION_KEY)
+  reducedMotion.matches = false
+}
 {
   // Requests must go to the prefix the host actually mounts. The bundle cannot
   // read the host's config, so these are two copies of one fact and they are
@@ -799,6 +861,15 @@ check(
   check('stylesheet installed under its own id', styleNode !== null)
   check('mascot paints at z-index 995 (below the rope 996)', /z-index:\s*995/.test(styleText))
   check('no CSS filter anywhere in the mascot stylesheet', !/filter\s*:/.test(styleText))
+  // The flip: the turn is a keyframe on the card and faces hide their back side.
+  // The card stays flat — no lift (translateZ), no shadow (box-shadow), and no
+  // filter anywhere (the white-flash rule above still holds stylesheet-wide).
+  check('the flip has a keyframe turn', /@keyframes\s+ps-flip/.test(styleText))
+  check('the turn is driven by rotateY (the vertical axis)', /rotateY\(180deg\)/.test(styleText))
+  check('faces hide their back side so only the facing one paints', /backface-visibility:\s*hidden/.test(styleText))
+  check('the incoming face is pre-rotated to face the viewer on landing', /\.ps-mascot__face--back\s*\{\s*transform:\s*rotateY\(180deg\)/.test(styleText))
+  check('the card stays flat: no lift, no shadow, no filter', !/translateZ/.test(styleText) && !/box-shadow\s*:/.test(styleText) && !/filter\s*:/.test(styleText))
+  check('the turn is exactly the ~1s the design called for', /animation:\s*ps-flip 1000ms/.test(styleText))
   check('the dock itself is display:contents (no layout box of its own)', /display:\s*contents/.test(styleText))
   check('hidden mascot keeps pointer-events:none', /pointer-events:\s*none/.test(styleText))
   check('touch-action:none keeps the pointer stream unbroken', /touch-action:\s*none/.test(styleText))
@@ -1348,13 +1419,15 @@ const realSleep = sleep
   const before = countOf('/session')
 
   // Now the user switches role in the SAME session: only the answer changes,
-  // exactly as the host does it (the seat never moves).
+  // exactly as the host does it (the seat never moves). The replacement is shown
+  // by turning a card, so the new art is on screen (as the back face) before the
+  // turn commits to it — `paintsSrc` asks the honest question.
   sessionAnswer = { ok: true, roleId: 'whale-girl' }
   await realPoll('a switch is picked up without re-entering the session', () => {
     view.render()
-    return imageOf(view.element)?.props?.src?.includes('whale-def') === true
+    return paintsSrc(view.element, 'whale-def')
   }, 9000)
-  check('the artwork follows the new role', imageOf(view.element).props.src.includes('whale-def'))
+  check('the artwork follows the new role', paintsSrc(view.element, 'whale-def'))
   check('the accessible label follows too', String(layerOf(view.element).props['aria-label']).includes('鲸鱼娘'))
   check('picking it up meant asking the host again', countOf('/session') > before, `${before} -> ${countOf('/session')}`)
 
@@ -1396,7 +1469,7 @@ const realSleep = sleep
   bumpRevision()
   await realPoll('one counter cycle is enough to follow a switch', () => {
     view.render()
-    return imageOf(view.element)?.props?.src?.includes('/w.png') === true
+    return paintsSrc(view.element, '/w.png')
   }, 4000)
   const took = Date.now() - startedAt
   check('the switch landed on a counter cycle, not a slow role cycle', took < REVISION_SLOW_MS, `${took}ms`)
@@ -1444,9 +1517,9 @@ const realSleep = sleep
   sessionAnswer = { ok: true, roleId: 'whale-girl' }
   await realPoll('a switch still arrives without the counter', () => {
     slow.render()
-    return imageOf(slow.element)?.props?.src?.includes('/w.png') === true
+    return paintsSrc(slow.element, '/w.png')
   }, 9000)
-  check('the fallback path follows the switch too', imageOf(slow.element).props.src.includes('/w.png'))
+  check('the fallback path follows the switch too', paintsSrc(slow.element, '/w.png'))
   slow.unmount()
 }
 
@@ -1507,9 +1580,9 @@ const realSleep = sleep
   rolesAnswer = { ok: true, roles: [{ id: 'whale-girl', name: 'whale-girl', mascot: { image: '/persona-switcher/mascot-file/w.png', box: '512x768' } }] }
   await realPoll('the mascot resumes once the host answers again', () => {
     view.render()
-    return imageOf(view.element)?.props?.src?.includes('/w.png') === true
+    return paintsSrc(view.element, '/w.png')
   }, 12000)
-  check('the polling recovered by itself', imageOf(view.element).props.src.includes('/w.png'))
+  check('the polling recovered by itself', paintsSrc(view.element, '/w.png'))
   view.unmount()
 }
 
@@ -1541,6 +1614,183 @@ const realSleep = sleep
   check('and the same event turns it back on', view.element !== null)
   view.unmount()
   storage.delete(SHOWN_KEY)
+}
+
+/* ── 14. The flip transition: a replacement turns a card, a first show does not ── */
+// Detection is already covered above (a switch reaches the mascot fast). This
+// section is about the PRESENTATION of that switch: instead of hard-swapping the
+// `src`, the old art stays on screen as the FRONT face while the new art turns
+// into view as the BACK face, and the turn commits to the new art. A first
+// appearance (nothing → art) and an unbind (art → nothing) keep the plain fade;
+// only a REPLACEMENT turns.
+{
+  // The role table for this whole section: BOTH roles, always, exactly as a live
+  // app holds them (`/roles` is polled and stays resident). A `/role` switch then
+  // moves `art` from one to the other with no frame where the role is unknown —
+  // and a turn needs a settled front face to turn FROM.
+  const flipRoles = () => ({
+    ok: true,
+    roles: [
+      { id: 'amiya', name: '阿米娅', mascot: { image: '/persona-switcher/mascot-file/a.png', box: '512x768' } },
+      { id: 'whale-girl', name: '鲸鱼娘', mascot: { image: '/persona-switcher/mascot-file/w.png', box: '400x600' } }
+    ]
+  })
+  /** The first div whose class list contains `cls`. */
+  const divWithClass = (element, cls) =>
+    findNodes(element, 'div').find((node) => String(node.props?.className ?? '').split(' ').includes(cls))
+  /** All imgs whose class list contains `cls`, in tree order. */
+  const imgsWithClass = (element, cls) =>
+    findNodes(element, 'img').filter((node) => String(node.props?.className ?? '').split(' ').includes(cls))
+
+  /* 14a. The pure state machine: every branch, no DOM. */
+  const amiya = { role: 'amiya', label: '阿米娅', src: '/a.png', width: 512, height: 768 }
+  const whale = { role: 'whale-girl', label: '鲸鱼娘', src: '/w.png', width: 400, height: 600 }
+  check('a first show settles the target directly (no turn)', (() => {
+    const plan = planFlip(amiya, null, false)
+    return plan.flip === null && plan.displayed === amiya
+  })())
+  check('an unbind drops everything (the wrapper fade hides it)', (() => {
+    const plan = planFlip(null, amiya, false)
+    return plan.flip === null && plan.displayed === null
+  })())
+  check('the same artwork is adopted without a turn', (() => {
+    const plan = planFlip({ ...amiya, label: 'A2' }, amiya, false)
+    return plan.flip === null && plan.displayed.label === 'A2'
+  })())
+  check('reduced motion swaps a replacement in place (turn is dropped)', (() => {
+    const plan = planFlip(whale, amiya, true)
+    return plan.flip === null && plan.displayed === whale
+  })())
+  check('a replacement turns: old stays front, new becomes the back', (() => {
+    const plan = planFlip(whale, amiya, false)
+    return plan.displayed === amiya && plan.flip?.to === whale
+  })())
+
+  /* 14b. A first appearance is NOT a turn: one settled image, no card. */
+  // Both roles stay in the table for the whole section, exactly as they are in a
+  // live app (`/roles` is polled and re-read on every change). A `/role` switch
+  // therefore moves `art` amiya→whale with no frame where the role is unknown —
+  // which is the only way a turn has something to turn FROM. Loading the target
+  // role late would drop through `art === null`, clear the shown art, and settle
+  // the replacement directly (a safe degrade, but not the path under test here).
+  storage.delete(SHOWN_KEY)
+  reducedMotion.matches = false
+  noRevisionEndpoint()
+  sessionAnswer = { ok: true, roleId: 'amiya' }
+  rolesAnswer = flipRoles()
+  resetRequests()
+  const first = renderComponent(PersonaMascot, { ctx: mkCtx(mkSeat('session-flip').service), t: IDENTITY, onShown: () => {} })
+  await realPoll('the first artwork appears', () => {
+    first.render()
+    return paintsSrc(first.element, '/a.png')
+  }, 8000)
+  first.render()
+  check('a first show renders exactly one settled image', imgsWithClass(first.element, 'ps-mascot__art').length === 1)
+  check('and no flip card at all', divWithClass(first.element, 'ps-mascot__card') === undefined)
+  check('and the box is not marked flipping', !String(layerOf(first.element).props.className).includes('is-flipping'))
+
+  /* 14c. A replacement turns: two faces, old front, new back, box sized to new. */
+  sessionAnswer = { ok: true, roleId: 'whale-girl' }
+  await realPoll('the replacement starts a turn', () => {
+    first.render()
+    return divWithClass(first.element, 'ps-mascot__card') !== undefined
+  }, 9000)
+  first.render()
+  const front = imgsWithClass(first.element, 'ps-mascot__face--front')
+  const back = imgsWithClass(first.element, 'ps-mascot__face--back')
+  check('the turn shows a front face (the OLD art)', front.length === 1 && front[0].props.src.includes('/a.png'), front[0]?.props?.src)
+  check('the turn shows a back face (the NEW art)', back.length === 1 && back[0].props.src.includes('/w.png'), back[0]?.props?.src)
+  check('the settled single image is gone during the turn', imgsWithClass(first.element, 'ps-mascot__art').length === 0)
+  check('the box carries the flipping marker', String(layerOf(first.element).props.className).includes('is-flipping'))
+  check('the box is sized to the INCOMING art (400px, not 512px)', layerOf(first.element).props.style.width === '400px', layerOf(first.element).props.style.width)
+  check('the stage is as tall as the incoming art box', divWithClass(first.element, 'ps-mascot__stage')?.props?.style?.height === '600px', divWithClass(first.element, 'ps-mascot__stage')?.props?.style?.height)
+
+  /* 14d. The turn commits on animationend. */
+  const card = divWithClass(first.element, 'ps-mascot__card')
+  check('the card listens for the turn to end', typeof card?.props?.onAnimationEnd === 'function')
+  fire(card, 'onAnimationEnd', { target: card, currentTarget: card })
+  first.render()
+  check('animationend lands the turn on the new art', imgsWithClass(first.element, 'ps-mascot__art')[0]?.props?.src?.includes('/w.png') === true, imgsWithClass(first.element, 'ps-mascot__art')[0]?.props?.src)
+  check('the card is gone after the commit', divWithClass(first.element, 'ps-mascot__card') === undefined)
+  check('the box leaves the flipping state', !String(layerOf(first.element).props.className).includes('is-flipping'))
+
+  /* 14e. A turn that loses its animationend still commits (fallback timer). */
+  rolesAnswer = flipRoles()
+  sessionAnswer = { ok: true, roleId: 'amiya' }
+  await realPoll('the reverse turn starts', () => {
+    first.render()
+    return divWithClass(first.element, 'ps-mascot__card') !== undefined
+  }, 9000)
+  // Do NOT fire animationend this time. The JS fallback must land the turn on its
+  // own, so the mascot can never be stuck mid-turn showing two half-faded faces.
+  await realSleep(FLIP_TOTAL_MS + FLIP_COMMIT_MARGIN_MS + 200)
+  first.render()
+  check('the fallback timer commits the turn without animationend', imgsWithClass(first.element, 'ps-mascot__art')[0]?.props?.src?.includes('/a.png') === true, imgsWithClass(first.element, 'ps-mascot__art')[0]?.props?.src)
+  check('and the card is cleaned up', divWithClass(first.element, 'ps-mascot__card') === undefined)
+  first.unmount()
+
+  /* 14f. Reduced motion: the same replacement swaps in place, no card. */
+  reducedMotion.matches = true
+  sessionAnswer = { ok: true, roleId: 'amiya' }
+  rolesAnswer = flipRoles()
+  const reduce = renderComponent(PersonaMascot, { ctx: mkCtx(mkSeat('session-reduce').service), t: IDENTITY, onShown: () => {} })
+  await realPoll('the reduce-mode mascot shows the first art', () => {
+    reduce.render()
+    return paintsSrc(reduce.element, '/a.png')
+  }, 8000)
+  sessionAnswer = { ok: true, roleId: 'whale-girl' }
+  await realPoll('a replacement under reduce swaps in place', () => {
+    reduce.render()
+    return paintsSrc(reduce.element, '/w.png')
+  }, 9000)
+  reduce.render()
+  check('reduce never renders a flip card', divWithClass(reduce.element, 'ps-mascot__card') === undefined)
+  check('reduce paints the new art as the single settled image', imgsWithClass(reduce.element, 'ps-mascot__art')[0]?.props?.src?.includes('/w.png') === true)
+  check('and the box is never marked flipping', !String(layerOf(reduce.element).props.className).includes('is-flipping'))
+  reducedMotion.matches = false
+  reduce.unmount()
+
+  /* 14g. The plugin's animation preference overrides the system reading. */
+  // The exact machine this feature exists for: the OS reports reduce (a Windows
+  // animation switch that is off) but the plugin preference says 'always' — the
+  // turn must run. And the mirror: system allows animation, preference says
+  // 'never' — the swap must be in place.
+  storage.set(MOTION_KEY, 'always')
+  reducedMotion.matches = true
+  sessionAnswer = { ok: true, roleId: 'amiya' }
+  rolesAnswer = flipRoles()
+  const forced = renderComponent(PersonaMascot, { ctx: mkCtx(mkSeat('session-forced').service), t: IDENTITY, onShown: () => {} })
+  await realPoll("'always' mounts the first art under system reduce", () => {
+    forced.render()
+    return paintsSrc(forced.element, '/a.png')
+  }, 8000)
+  sessionAnswer = { ok: true, roleId: 'whale-girl' }
+  await realPoll("'always' turns even though the system reports reduce", () => {
+    forced.render()
+    return divWithClass(forced.element, 'ps-mascot__card') !== undefined
+  }, 9000)
+  forced.render()
+  check('the override renders a real two-face card under reduce', imgsWithClass(forced.element, 'ps-mascot__face--back').length === 1)
+  forced.unmount()
+
+  storage.set(MOTION_KEY, 'never')
+  reducedMotion.matches = false
+  sessionAnswer = { ok: true, roleId: 'amiya' }
+  const silenced = renderComponent(PersonaMascot, { ctx: mkCtx(mkSeat('session-silenced').service), t: IDENTITY, onShown: () => {} })
+  await realPoll("'never' mounts the first art with the system allowing animation", () => {
+    silenced.render()
+    return paintsSrc(silenced.element, '/a.png')
+  }, 8000)
+  sessionAnswer = { ok: true, roleId: 'whale-girl' }
+  await realPoll("'never' swaps in place even though the system allows animation", () => {
+    silenced.render()
+    return paintsSrc(silenced.element, '/w.png')
+  }, 9000)
+  silenced.render()
+  check("'never' renders no card where the system allows animation", divWithClass(silenced.element, 'ps-mascot__card') === undefined)
+  silenced.unmount()
+  storage.delete(MOTION_KEY)
+  reducedMotion.matches = false
 }
 
 console.log(failures.length === 0 ? `mascot client OK (${passed} checks)` : `mascot client FAILED (${passed} passed)`)

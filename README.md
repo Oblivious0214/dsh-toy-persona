@@ -34,6 +34,10 @@ DeepSeek Harness 的人设切换插件：把一个角色的**人设与语言风�
 - 🐳 **屏幕吉祥物**：给角色导入一张立绘，当前会话的角色就作为吉祥物出现在界面上，可拖到任意位置。
   只在「有会话界面 + 该会话有角色 + 该角色绑了立绘」三条同时成立时出现；没绑立绘的角色不显示，
   也不占位。总开关、大小（0.5×–2.5×）与位置重置都在设置页。
+- 🃏 **角色切换的翻纸动画**：替换立绘时不再硬切——旧图作正面、新图从背面翻入，卡片绕立绘自身
+  竖轴转 180°（约 1 秒，不抬起、不加阴影）。「切换动画」有三档：**跟随系统**（默认，尊重系统
+  的「减少动画」偏好）/ **始终开** / **始终关**——所以系统关了动画的机器也能单独让吉祥物翻起来，
+  不需要改系统级开关。
 - 🧭 **专属导航图标**：设置页左栏里它带着自己的面具图标。
 - 🔍 **`role_probe` 诊断工具**：一条命令看清当前绑定、系统节点、工具清单（可关闭）。
 - 🔒 **只动该动的**：不声明任何角色级工具、技能或模型——切换人设不会顺带放权。
@@ -76,7 +80,7 @@ DeepSeek Harness 的人设切换插件：把一个角色的**人设与语言风�
 - 一条角色库 prompt section（`persona-switcher:catalogue`，顺带把可用角色清单列进系统提示词）+ 每会话一条 agent 作用域的人设 section；
 - 一条 `/role` 斜杠命令；`exposeTool: true` 时一个 `role_probe` 工具；
 - 浏览器侧：一个设置页 section（id 固定 `persona-switcher`，注册在 `settings.section` 槽位、`order: 15`）+ 若干 `ps-` 前缀样式（锚定在 `.dsh-panel.ps-page`，不污染宿主 UI）；
-- 浏览器侧还有一个**独立的 React root**（挂在 `<body>` 下的 `#dsh-persona-switcher-mascot-dock`）承载屏幕吉祥物，它只读宿主的 `sidebarRight.mounted` 快照来知道「现在看着哪个会话」，**从不写入该服务**；总开关与大小存在 `localStorage` 的 `dsh-persona-switcher:mascot-shown` / `:mascot-size`，位置存在 `:mascot-pos`（仅本机、不上传）。
+- 浏览器侧还有一个**独立的 React root**（挂在 `<body>` 下的 `#dsh-persona-switcher-mascot-dock`）承载屏幕吉祥物，它只读宿主的 `sidebarRight.mounted` 快照来知道「现在看着哪个会话」，**从不写入该服务**；总开关、大小与动画偏好存在 `localStorage` 的 `dsh-persona-switcher:mascot-shown` / `:mascot-size` / `:mascot-motion`，位置存在 `:mascot-pos`（仅本机、不上传）。
 - `announceRoleChange: true`（默认）时，切换后往该会话注入一条 `<system-reminder>Role change: …` 用户消息——它是**真实会话消息**，所以会出现在该会话的记录里，这是刻意的（见「配置项」）。**每一次人设变更都会发**：角色 → 角色、部署人设 → 角色、角色 → `/role none` 回到部署人设、以及被记住的角色从库里消失后改由别的角色接手，四种方向各有一条对应的声明；只有「本会话原本就是这个角色」的自动恢复保持安静，因为那不是变更（见「配置项」）。
 
 ### 网络
@@ -236,8 +240,11 @@ description: 温柔高效的鲸御姐，本鲸自称
 
 - 改新会话的默认角色（`defaultRole` 输入框，留空即回到部署默认；改完保存会写进 profile 配置）；
 - 开关 `role_probe` 诊断工具（`exposeTool`）；
-- **屏幕吉祥物**卡片：总开关（默认开）、大小滑块（0.5×–2.5×）、「回到默认位置」。开关与大小是
-  **本机值**（存在 `localStorage`），不进 profile 配置；改完当场生效，不需要重启。
+- **屏幕吉祥物**卡片：总开关（默认开）、大小滑块（0.5×–2.5×）、「切换动画」三档（跟随系统 /
+  始终开 / 始终关）、「回到默认位置」。这些都是**本机值**（存在 `localStorage`），不进 profile
+  配置；改完当场生效，不需要重启。「切换动画」控制角色替换时立绘的翻纸动画：默认跟随系统的
+  「减少动画」偏好，选「始终开」则系统关闭动画时也照常翻转，选「始终关」则即使系统允许动画
+  也瞬时换图。
 
 **角色库**
 
@@ -302,6 +309,7 @@ prompt registry 每一步重新组装系统节点并发出 `system-prompt/change
 - 与 `dsh-role-switcher` 等其它人设/能力插件互不影响：本插件不注册 preset，也不占用角色 id。
 - **可与其它屏幕插件同屏共存**：本插件用独立的 DOM id、独立的 `<style>` id 与独立的 `localStorage`
   命名空间（`dsh-persona-switcher:*`），吉祥物样式里**没有任何 CSS `filter`**（避免合成层反复重绘），
+  翻纸动画只动 `transform` 与 `opacity`（不触发布局、不加阴影），
   吉祥物**不监听 `keydown`**（Esc 留给别的插件用）、**不注册 `contextmenu` 拦截**（右键仍出系统菜单）、
   也**不往 `sidebarRight` 注册任何东西**——只读它的 `mounted` 快照。
 
@@ -411,11 +419,17 @@ as a draggable mascot — draggable anywhere, and it stays where you put it (no 
 up only when a session screen is on screen, that session has a role (not `none`), and that role has
 artwork bound; a role without artwork shows nothing at all, not a placeholder. The General tab carries
 a master switch (off means the mascot is not mounted at all, so it costs no request and no decode), a
-0.5×–2.5× size slider, and a "back to the default spot" button. The switch and the size are your
-device's values, kept in `localStorage`, and they take effect immediately without a reload. Artwork is
-written to `$DSH_HOME/persona-switcher/mascot/`, with the map in `mascot-map.json` beside it — never
-into the role directory, so a role's prose and its picture stay independent files. png / jpeg / webp
-only, up to 1 MB decoded and 4096 px per side, three versions per role.
+0.5×–2.5× size slider, a three-way **switch animation** choice, and a "back to the default spot" button.
+Replacing the artwork turns a card instead of hard-cutting: the old art stays as the front face while
+the new one rotates in as the back face — 180° about the artwork's own vertical mid-line, about a
+second, with no lift and no shadow. The animation choice is `System` (the default: honour the OS
+reduce-motion setting), `Always` (turn even when the system asks for reduced motion — a machine whose
+Windows animation switch is off can still see the flip without changing a system-wide preference), or
+`Never` (swap in place even where the OS allows animation). The switch, the size and the animation
+preference are your device's values, kept in `localStorage`, and they take effect immediately without a
+reload. Artwork is written to `$DSH_HOME/persona-switcher/mascot/`, with the map in `mascot-map.json`
+beside it — never into the role directory, so a role's prose and its picture stay independent files.
+png / jpeg / webp only, up to 1 MB decoded and 4096 px per side, three versions per role.
 
 A role is applied as a prompt section of this plugin's own — `persona-switcher:persona`, placed right
 after the deployment persona prefix (order 0) and registered in that session's own scope — the same
@@ -454,7 +468,7 @@ and, with `announceRoleChange: true`, a `<system-reminder>Role change: …` user
 session. Every persona change gets one — role to role, deployment persona to role, `/role none` back to
 the deployment persona, and a remembered role that vanished from the library handing over to another —
 while an automatic rebind that leaves the session's role unchanged stays silent. The mascot's switch,
-size and position live in `localStorage` under this plugin's own namespace.
+size, animation preference and position live in `localStorage` under this plugin's own namespace.
 
 The only network surface is **inbound**: a prefix route mounted on the host's existing loopback
 webServer (`routePrefix`, default `/persona-switcher`) with eight endpoints (`GET /roles`,

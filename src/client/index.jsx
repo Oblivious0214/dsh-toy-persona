@@ -10,6 +10,9 @@ import {
 import { installMascot } from './mascot.jsx'
 import {
   CHANGED_EVENT,
+  MOTION_EVENT,
+  MOTION_KEY,
+  MOTION_VALUES,
   POS_EVENT,
   SHOWN_EVENT,
   SHOWN_KEY,
@@ -20,8 +23,10 @@ import {
   broadcast,
   clearPos,
   clampSize,
+  readMotion,
   readShown,
   readSize,
+  writeMotion,
   writeSize
 } from './mascot.jsx'
 
@@ -158,6 +163,8 @@ class PersonaSwitcherCardController {
   mascotShown = true
   /** Mascot size multiplier, mirrored from the client-side key. */
   mascotSize = 1
+  /** Animation preference for the role-switch turn: 'system' | 'always' | 'never'. */
+  mascotMotion = 'system'
   /** Which tab of the page is showing: `general` | `library`. */
   tab = 'general'
   /** Role id waiting for a delete confirmation, or `null`. */
@@ -176,6 +183,7 @@ class PersonaSwitcherCardController {
     this.store = this.form.bind(() => this.projection())
     this.mascotShown = readShown()
     this.mascotSize = readSize()
+    this.mascotMotion = readMotion()
     void this.load()
   }
 
@@ -197,7 +205,8 @@ class PersonaSwitcherCardController {
       tab: this.tab,
       confirming: this.confirming,
       mascotShown: this.mascotShown,
-      mascotSize: this.mascotSize
+      mascotSize: this.mascotSize,
+      mascotMotion: this.mascotMotion
     }
   }
 
@@ -403,6 +412,19 @@ class PersonaSwitcherCardController {
     this.form.publish()
   }
 
+  /**
+   * Set the animation preference for the role-switch turn.
+   *
+   * The mascot itself needs no broadcast — it reads the key at the moment a
+   * switch happens — but a second settings surface must not keep showing the old
+   * choice, so this follows the same broadcast pattern as the switch and size.
+   */
+  setMascotMotion(value) {
+    this.mascotMotion = writeMotion(value)
+    broadcast(MOTION_EVENT)
+    this.form.publish()
+  }
+
   /** Send the mascot back to its default corner and forget where it was. */
   resetMascotPos() {
     clearPos()
@@ -419,9 +441,11 @@ class PersonaSwitcherCardController {
   syncMascotState() {
     const shown = readShown()
     const size = readSize()
-    if (shown === this.mascotShown && size === this.mascotSize) return
+    const motion = readMotion()
+    if (shown === this.mascotShown && size === this.mascotSize && motion === this.mascotMotion) return
     this.mascotShown = shown
     this.mascotSize = size
+    this.mascotMotion = motion
     this.form.publish()
   }
 
@@ -746,6 +770,58 @@ const STYLE_TEXT = `
   font-variant-numeric: tabular-nums;
   color: var(--ps-ink-3);
 }
+/* ── Segmented three-way choice (the animation preference) ──
+   Same vocabulary as the page's tab bar: a track, a sliding pill, flat buttons
+   on top. Three columns, so the pill steps a third of the track per choice. */
+.dsh-panel.ps-page .ps-seg {
+  position: relative;
+  display: grid;
+  grid-template-columns: repeat(3, 1fr);
+  padding: 3px;
+  border-radius: 11px;
+  background: var(--ps-surface);
+  border: 1px solid var(--ps-border);
+  overflow: hidden;
+  flex: 0 0 auto;
+}
+.dsh-panel.ps-page .ps-seg__pill {
+  position: absolute;
+  top: 3px;
+  left: 3px;
+  bottom: 3px;
+  width: calc((100% - 6px) / 3);
+  border-radius: 8px;
+  background: var(--ps-raised);
+  box-shadow: 0 1px 4px rgba(0, 0, 0, 0.16), inset 0 1px 0 rgba(255, 255, 255, 0.10);
+  transition: transform 220ms var(--ps-ease);
+  will-change: transform;
+}
+.dsh-panel.ps-page .ps-seg__btn {
+  position: relative;
+  z-index: 1;
+  height: 28px;
+  border: 0;
+  background: transparent;
+  border-radius: 8px;
+  cursor: pointer;
+  white-space: nowrap;
+  padding: 0 10px;
+  font-size: 12px;
+  font-family: inherit;
+  color: var(--ps-ink-3);
+  transition: color 140ms var(--ps-ease);
+}
+.dsh-panel.ps-page .ps-seg__btn:hover {
+  color: var(--ps-ink);
+}
+.dsh-panel.ps-page .ps-seg__btn[aria-pressed='true'] {
+  color: var(--ps-ink);
+  font-weight: 650;
+}
+.dsh-panel.ps-page .ps-seg__btn:focus-visible {
+  outline: 2px solid var(--ps-accent);
+  outline-offset: -2px;
+}
 .dsh-panel.ps-page .ps-note {
   margin: 6px 0 0;
   font-size: 11.5px;
@@ -995,6 +1071,7 @@ const STYLE_TEXT = `
 @media (prefers-reduced-motion: reduce) {
   .dsh-panel.ps-page .ps-panel { animation: none; }
   .dsh-panel.ps-page .ps-tabs__pill { transition: none; }
+  .dsh-panel.ps-page .ps-seg__pill { transition: none; }
   .dsh-panel.ps-page .ps-skel::after,
   .dsh-panel.ps-page .ps-skel__avatar::after,
   .dsh-panel.ps-page .ps-skel__lines i::after { animation: none; }
@@ -1135,10 +1212,22 @@ const PersonaSwitcherSection = (props) => {
   const { controller, t, useSnapshot } = props
   if (controller === undefined || useSnapshot === undefined || t === undefined) return null
   const state = useSnapshot((value) => value)
-  const { roles, editing, busy, error, exposeTool, tab, confirming, status, editingNew, mascotShown, mascotSize } =
-    state
+  const {
+    roles,
+    editing,
+    busy,
+    error,
+    exposeTool,
+    tab,
+    confirming,
+    status,
+    editingNew,
+    mascotShown,
+    mascotSize,
+    mascotMotion
+  } = state
 
-  // These two controls are client-side values another window (or another tab of
+  // These controls are client-side values another window (or another tab of
   // this page) can change behind this page's back, so they are re-read on the
   // events rather than trusted from the snapshot alone.
   useEffect(() => {
@@ -1147,7 +1236,13 @@ const PersonaSwitcherSection = (props) => {
       // only a real StorageEvent names one. Without that case the broadcast
       // listeners below never ran, and a switch flipped in this window left the
       // stored value and the displayed toggle disagreeing.
-      if (event.key !== undefined && event.key !== null && event.key !== SHOWN_KEY && event.key !== SIZE_KEY) {
+      if (
+        event.key !== undefined &&
+        event.key !== null &&
+        event.key !== SHOWN_KEY &&
+        event.key !== SIZE_KEY &&
+        event.key !== MOTION_KEY
+      ) {
         return
       }
       controller.syncMascotState()
@@ -1155,10 +1250,12 @@ const PersonaSwitcherSection = (props) => {
     window.addEventListener('storage', onStored)
     window.addEventListener(SHOWN_EVENT, onStored)
     window.addEventListener(SIZE_EVENT, onStored)
+    window.addEventListener(MOTION_EVENT, onStored)
     return () => {
       window.removeEventListener('storage', onStored)
       window.removeEventListener(SHOWN_EVENT, onStored)
       window.removeEventListener(SIZE_EVENT, onStored)
+      window.removeEventListener(MOTION_EVENT, onStored)
     }
   }, [controller])
 
@@ -1541,6 +1638,30 @@ const PersonaSwitcherSection = (props) => {
               </div>
               <div className="ps-row">
                 <div className="ps-row__text">
+                  <span className="ps-row__label">{t('mascotMotion')}</span>
+                  <span className="ps-row__hint">{t('mascotMotionHint')}</span>
+                </div>
+                <div className="ps-seg" role="group" aria-label={t('mascotMotion')}>
+                  <span
+                    className="ps-seg__pill"
+                    style={{ transform: `translateX(${MOTION_VALUES.indexOf(mascotMotion) * 100}%)` }}
+                    aria-hidden="true"
+                  />
+                  {MOTION_VALUES.map((value) => (
+                    <button
+                      key={value}
+                      type="button"
+                      className="ps-seg__btn"
+                      aria-pressed={mascotMotion === value}
+                      onClick={() => controller.setMascotMotion(value)}
+                    >
+                      {t(`mascotMotion${value[0].toUpperCase()}${value.slice(1)}`)}
+                    </button>
+                  ))}
+                </div>
+              </div>
+              <div className="ps-row">
+                <div className="ps-row__text">
                   <span className="ps-row__label">{t('mascotPosition')}</span>
                   <span className="ps-row__hint">{t('mascotPositionHint')}</span>
                 </div>
@@ -1649,6 +1770,11 @@ const zh = {
   mascotShownHint: '关掉后界面立刻干净，也不会有任何相关请求。仅影响本机显示。',
   mascotSize: '大小',
   mascotSizeHint: '缩放立绘，不改变它的比例。',
+  mascotMotion: '切换动画',
+  mascotMotionHint: '角色切换时立绘的翻转动画。选"始终"可无视系统动画设置。',
+  mascotMotionSystem: '跟随系统',
+  mascotMotionAlways: '始终开',
+  mascotMotionNever: '始终关',
   mascotPosition: '位置',
   mascotPositionHint: '吉祥物拖到哪就待在哪，不会自动吸附边缘。',
   mascotResetPos: '回到默认位置',
@@ -1713,6 +1839,11 @@ const en = {
   mascotShownHint: 'Turning this off clears the screen at once, and sends no requests at all. This device only.',
   mascotSize: 'Size',
   mascotSizeHint: 'Scales the artwork without changing its proportions.',
+  mascotMotion: 'Switch animation',
+  mascotMotionHint: 'The card-turn when the role switches. "Always" overrides the system animation setting.',
+  mascotMotionSystem: 'System',
+  mascotMotionAlways: 'Always',
+  mascotMotionNever: 'Never',
   mascotPosition: 'Position',
   mascotPositionHint: 'The mascot stays where you drop it; it never snaps to an edge.',
   mascotResetPos: 'Back to the default spot',

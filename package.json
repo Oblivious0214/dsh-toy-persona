@@ -1,6 +1,6 @@
 {
   "name": "dsh-persona-switcher",
-  "version": "0.2.1",
+  "version": "0.3.0",
   "description": "Switch the model's persona and speaking style mid-session without touching its tools or skills, and give a role an on-screen mascot. 角色切换：只切换模型的人设与语言风格，不动工具与技能，可为角色绑定屏幕吉祥物立绘。",
   "keywords": [
     "deepseek-harness",
@@ -27,7 +27,7 @@
   "homepage": "https://github.com/yupaoa/dsh-persona-switcher#readme",
   "engines": {
     "node": "^22.19.0 || >=24.0.0",
-    "dsh": ">=0.2.0-rc.1"
+    "dsh": ">=0.2.0-rc.1 || >=0.2.1-rc.1"
   },
   "type": "module",
   "main": "lib/index.js",
@@ -81,7 +81,7 @@
   },
   "peerDependencies": {
     "@deepseek-ai/cordis": "^4.0.4",
-    "@deepseek-ai/dsh-tools": "^0.2.0-rc.1",
+    "@deepseek-ai/dsh-tools": "^0.2.0-rc.1 || ^0.2.1-rc.1",
     "@deepseek-ai/schemastery": "^3.18.4"
   },
   "peerDependenciesMeta": {
@@ -99,10 +99,10 @@
     "@deepseek-ai/schemastery": "^3.18.4"
   },
   "devDependencies": {
-    "@deepseek-ai/dsh-client-locale": "^0.2.0-rc.2",
-    "@deepseek-ai/dsh-client-ui-primitives": "^0.2.0-rc.2",
-    "@deepseek-ai/dsh-client-ui-settings": "^0.2.0-rc.2",
-    "@deepseek-ai/dsh-client-ui-slots": "^0.2.0-rc.2",
+    "@deepseek-ai/dsh-client-locale": "^0.2.0-rc.2 || ^0.2.1-rc.1",
+    "@deepseek-ai/dsh-client-ui-primitives": "^0.2.0-rc.2 || ^0.2.1-rc.1",
+    "@deepseek-ai/dsh-client-ui-settings": "^0.2.0-rc.2 || ^0.2.1-rc.1",
+    "@deepseek-ai/dsh-client-ui-slots": "^0.2.0-rc.2 || ^0.2.1-rc.1",
     "@types/react": "^18.3.31",
     "@types/react-dom": "^18.3.7",
     "clsx": "^2.1.1",

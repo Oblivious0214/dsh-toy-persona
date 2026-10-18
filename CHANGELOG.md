@@ -4,6 +4,53 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.0] - 2026-10-18
+
+### Added
+
+- **Replacing a role's mascot now turns a card instead of hard-cutting.** A `/role` switch (or an artwork
+  replacement from the settings page) used to swap the `<img>` `src` the instant the client noticed it — one
+  frame of the old art, then the new one, with nothing in between. The mascot now keeps the OLD artwork on
+  screen as the front face of a card and turns the NEW one into view as the back face: the card rotates 180°
+  about its own vertical mid-line over ~1s, eased in-out so it moves fastest through the edge-on 90°, where
+  the axis reads as the picture's own centre. The card stays flat throughout — no lift, no shadow. Detection
+  is untouched: the `/revision` counter still notices a switch in about a quarter of a second and the turn
+  starts then — this is a presentation layer over it, not a change to it.
+- **The turn is self-healing and never gets stuck.** The new artwork is decoded BEFORE the turn starts (so the
+  back face is never an empty box), the turn commits on the card's own `animationend`, and a fallback timer
+  commits it `FLIP_TOTAL_MS + 200ms` after the newest back face is set — a hidden tab pausing CSS animations
+  can no longer leave the mascot mid-turn showing two half-faded faces. A URL that will not decode skips the
+  turn and settles directly, letting the settled image's own `onError` drop a truly broken role. Switches that
+  arrive mid-turn retarget the back face (latest wins); a superseded preload never commits.
+- **Only a REPLACEMENT turns.** A first appearance (nothing → art) and an unbind (art → nothing) keep the plain
+  opacity fade the wrapper already had — there is no card to turn when nothing is on screen. Under
+  `prefers-reduced-motion` the swap happens in place, same as the hover growth: the feedback survives, the 1s
+  turn does not (Chromium infers this from Windows' own animation setting, so "reduce" is not rare — see the
+  0.2.1 note on the hover lesson). A new settings control overrides that reading per-plugin, described next.
+- **A per-plugin animation switch: 跟随系统 / 始终开 / 始终关 (System / Always / Never).** The reduced-motion
+  reading above is a system-wide accessibility preference, and a machine whose Windows animation switch is off
+  (Chromium then reports `prefers-reduced-motion: reduce`) would lose the turn with no way to keep it short of
+  flipping a global setting. The mascot card on the settings page now carries a three-way choice stored under
+  `dsh-persona-switcher:mascot-motion`: `always` turns even under system reduce, `never` swaps in place even
+  where the system allows animation, and the default `system` follows the OS exactly as before. A corrupt or
+  hand-edited value folds back onto `system` — it can never force a choice in either direction.
+- **None of it costs the coexistence rules.** No CSS `filter` anywhere (nor any shadow — the turn is a plain
+  rotation), the turn
+  animates a new inner stage/card/face layer so the wrapper's `transform: scale()` stays the size multiplier and
+  the drag maths never sees it, the faces are `pointer-events: none` so they never eat the drag, and hovering
+  keeps growing the settled artwork exactly as before — but never a face mid-turn, where a hover scale would
+  fight the rotation.
+
+### Changed
+
+- **The mascot client checks ask a different question about a switch.** A replacement is on screen (as the back
+  face) before the turn commits, so the switch-detection polls now ask "is this art painted by any face"
+  (`paintsSrc`) rather than "is it the first `<img>`" — the old question conflated detection latency with the
+  animation. The flip itself is verified by a new section (the pure `planFlip` state machine, a first show
+  rendering no card, a replacement rendering front=old/back=new with the box already sized to the incoming art,
+  the `animationend` commit, the fallback-timer commit, and reduced motion swapping in place) plus stylesheet
+  assertions pinning the axis, the duration, and the absence of `filter`.
+
 ## [0.2.1] - 2026-10-16
 
 ### Added

@@ -47,6 +47,16 @@ const SHOWN_KEY = 'dsh-persona-switcher:mascot-shown'
 const POS_KEY = 'dsh-persona-switcher:mascot-pos'
 /** Artwork size multiplier. The host keeps ownership of a role's REAL pixel size. */
 const SIZE_KEY = 'dsh-persona-switcher:mascot-size'
+/**
+ * Animation preference for the role-switch turn: 'system' (default — honour the
+ * OS `prefers-reduced-motion`), 'always' (turn even under reduce), or 'never'
+ * (swap in place even when the OS allows animation). A per-plugin override, so a
+ * machine whose OS animation setting is off can still see the turn without
+ * changing a system-wide accessibility switch.
+ */
+const MOTION_KEY = 'dsh-persona-switcher:mascot-motion'
+/** The three animation-preference values, in the order the settings page shows them. */
+const MOTION_VALUES = ['system', 'always', 'never']
 /** Smallest and largest multiplier the settings page offers. */
 const SIZE_MIN = 0.5
 const SIZE_MAX = 2.5
@@ -56,6 +66,8 @@ const SHOWN_EVENT = 'persona-switcher:mascot-shown'
 const CHANGED_EVENT = 'persona-switcher:changed'
 /** Broadcast when another part of the page changes the size or resets the spot. */
 const SIZE_EVENT = 'persona-switcher:mascot-size-changed'
+/** Broadcast when the animation preference changes (settings surface to settings surface). */
+const MOTION_EVENT = 'persona-switcher:mascot-motion-changed'
 const POS_EVENT = 'persona-switcher:mascot-pos-reset'
 /** Gap kept between the mascot and every viewport edge, in px. */
 const EDGE = 8
@@ -177,6 +189,35 @@ const writeSize = (value) => {
     /* ignore */
   }
   return size
+}
+
+/**
+ * Fold any stored value onto one of the three animation preferences. Anything
+ * that is not 'always' or 'never' means "follow the system" — a corrupt or
+ * hand-edited value must never be able to force an animation on or off.
+ * @param value - the raw stored (or handed-in) value.
+ * @returns 'system' | 'always' | 'never'.
+ */
+const normalizeMotion = (value) => (value === 'always' || value === 'never' ? value : 'system')
+
+/** Read the animation preference. A missing, blocked or corrupt value means 'system'. */
+const readMotion = () => {
+  try {
+    return normalizeMotion(window.localStorage.getItem(MOTION_KEY))
+  } catch {
+    return 'system'
+  }
+}
+
+/** Persist the animation preference, normalized. Returns what was stored. */
+const writeMotion = (value) => {
+  const motion = normalizeMotion(value)
+  try {
+    window.localStorage.setItem(MOTION_KEY, motion)
+  } catch {
+    /* ignore */
+  }
+  return motion
 }
 
 /** Tell every listener (this page's other components, other windows) what changed. */
@@ -308,13 +349,110 @@ const artOf = (roles, roleId) => {
   if (match === null) return null
   const width = Number(match[1])
   if (!Number.isFinite(width) || width <= 0) return null
+  // The natural rendered height at that width: the box is `width x height`, so
+  // painted `width`px wide it is `height`px tall. The flip's card box needs it
+  // (its two faces are absolutely positioned and contribute no height of their
+  // own); everything else still keys on `width` alone.
+  const height = Number(match[2])
   return {
     role: roleId,
     label: typeof role.name === 'string' && role.name !== '' ? role.name : roleId,
     src: mascot.image,
-    width
+    width,
+    height
   }
 }
+
+/**
+ * The flip transition, browser half: replacing one artwork with another looks
+ * like turning a card over — the old art is the FRONT face, the new art the BACK
+ * face (pre-rotated 180deg), and the card turns ~1s about its vertical centre
+ * axis, eased in-out so it moves fastest through the edge-on 90deg. The card
+ * stays flat on the table: no lift, no shadow, and (as everywhere in this file)
+ * no CSS `filter` — whose permanent layer over the wallpaper is the white-flash
+ * lesson recorded at the top.
+ *
+ * This is a PRESENTATION layer over detection, which is unchanged: the
+ * `/revision` counter still notices a `/role` switch, and this code only decides
+ * how the swap is shown. It runs for a REPLACEMENT only (old and new both on
+ * screen); a first appearance or an unbind keeps the plain opacity fade the
+ * wrapper already had.
+ */
+/** Total run time of the flip keyframes, in ms. The JS commit falls back to this. */
+const FLIP_TOTAL_MS = 1000
+/** Grace past the keyframes before the JS commits the flip on its own. */
+const FLIP_COMMIT_MARGIN_MS = 200
+
+/**
+ * Decide how the next frame paints the artwork. Pure, so the state machine is
+ * verified without a browser:
+ *
+ *   - target gone         -> drop everything (the wrapper's fade hides it);
+ *   - nothing shown yet   -> show the target directly (a first appearance);
+ *   - same artwork        -> adopt it (a new label, or two roles sharing one URL),
+ *                            with no animation;
+ *   - reduced motion      -> swap in place. The swap SURVIVES, the 1s turn does
+ *                            not — the same stance the hover growth takes: keep
+ *                            the feedback, drop the easing;
+ *   - a real replacement  -> keep the old art as the FRONT face and flip the new
+ *                            art in as the BACK face.
+ *
+ * @param target - the artwork the session now wants, or null.
+ * @param displayed - the artwork currently settled on screen, or null.
+ * @param reduced - whether the user asked for reduced motion.
+ * @returns `{ displayed, flip }` for the next frame.
+ */
+const planFlip = (target, displayed, reduced) => {
+  if (target === null) return { displayed: null, flip: null }
+  if (displayed === null) return { displayed: target, flip: null }
+  if (displayed.src === target.src) return { displayed: target, flip: null }
+  if (reduced) return { displayed: target, flip: null }
+  return { displayed, flip: { to: target } }
+}
+
+/**
+ * Should a replacement swap in place instead of turning?
+ *
+ * The plugin's own animation preference (MOTION_KEY) wins when it has one:
+ * 'always' turns even under the OS's reduced-motion — a machine whose Windows
+ * animation switch is off need not lose the turn — and 'never' swaps in place
+ * even where the OS allows animation. The default, 'system', follows
+ * `prefers-reduced-motion`; an absent matchMedia reads as "no reduce".
+ * @returns whether the turn should be skipped.
+ */
+const reducedMotion = () => {
+  const motion = readMotion()
+  if (motion === 'always') return false
+  if (motion === 'never') return true
+  return (
+    typeof window !== 'undefined' &&
+    typeof window.matchMedia === 'function' &&
+    window.matchMedia('(prefers-reduced-motion: reduce)').matches === true
+  )
+}
+
+/**
+ * Decode an artwork URL before it becomes the BACK face, so the turn never
+ * reveals an empty box. Resolves `true` once the bytes are decoded, `false` when
+ * the URL will not decode — the caller then skips the card turn and settles on
+ * the target directly, letting the settled image's own `onError` drop a truly
+ * broken role. A host without `Image` (the simulation harness) resolves `true`
+ * immediately, so the flip path is what the headless checks exercise.
+ *
+ * @param src - the artwork URL to warm.
+ * @returns a promise resolving to whether the artwork decoded.
+ */
+const preloadArtwork = (src) =>
+  new Promise((resolve) => {
+    if (typeof Image !== 'function') {
+      resolve(true)
+      return
+    }
+    const probe = new Image()
+    probe.onload = () => resolve(true)
+    probe.onerror = () => resolve(false)
+    probe.src = src
+  })
 
 /**
  * Follow a snapshot-like value (`getSnapshot` / `subscribe`). Absent, partial or
@@ -421,6 +559,62 @@ const STYLE_TEXT = `
 }
 .ps-mascot:hover .ps-mascot__art {
   transform: scale(1.06);
+}
+/* ── The flip: a card with a face on each side, turned on its vertical axis ──
+   Only present while .is-flipping is on the box, i.e. for the ~1s a role is
+   being replaced. The stage owns the perspective; the card owns the turn; the
+   two faces are the OLD art (front) and the NEW art (back). Both faces hide
+   their back side (backface-visibility), so as the card turns past 90deg the
+   front vanishes and the pre-rotated back swings into view — the paper-flip.
+   object-fit: contain lets a predecessor of a different aspect letterbox into
+   the new box instead of stretching. The card stays flat throughout: no lift,
+   no shadow, and (per the coexistence rule at the top of this file) no filter.
+   Reduced motion never reaches here: planFlip settles the swap in place, so no
+   card is rendered at all (the effect survives, the 1s turn does not). */
+.ps-mascot__stage {
+  position: relative;
+  width: 100%;
+  /* The height is set inline from the incoming art's box, so the card has real
+     bounds to turn within instead of collapsing to zero. */
+  perspective: 700px;             /* depth for the turn; larger = gentler */
+  pointer-events: none;           /* the box keeps the drag through the turn */
+}
+.ps-mascot__card {
+  position: relative;
+  width: 100%;
+  height: 100%;
+  transform-style: preserve-3d;   /* the faces stay in the card's 3D space */
+  transform-origin: center center; /* the vertical mid-line: the flip axis */
+  animation: ps-flip 1000ms both;
+}
+.ps-mascot__face {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  object-fit: contain;            /* never stretch a differently-shaped face */
+  backface-visibility: hidden;
+  -webkit-backface-visibility: hidden;
+  pointer-events: none;           /* the faces never eat the drag */
+}
+.ps-mascot__face--front {
+  transform: rotateY(0deg);
+}
+.ps-mascot__face--back {
+  transform: rotateY(180deg);     /* pre-turned, so it faces out as the card lands */
+}
+/* The turn, and nothing else: the card rotates about its vertical mid-line from
+   face-on to face-on, eased in-out so it moves fastest through the edge-on 90deg
+   (where the axis reads as the image's own centre). The card stays flat on the
+   table throughout — no lift, no shadow. */
+@keyframes ps-flip {
+  0% {
+    transform: rotateY(0deg);
+    animation-timing-function: cubic-bezier(0.65, 0, 0.35, 1);
+  }
+  100% {
+    transform: rotateY(180deg);
+  }
 }
 /* A user who asked for reduced motion gets the SAME hover growth, applied
    instantly instead of animated. An earlier version cancelled the transform
@@ -759,7 +953,96 @@ const PersonaMascot = (props) => {
   }, [props])
 
   const art = session === null ? null : artOf(roles, session)
-  const width = art === null ? DEFAULT_WIDTH : art.width
+
+  // ── The flip transition ─────────────────────────────────────────────────
+  // `displayed` is the artwork painted on screen: the settled single image, or
+  // the FRONT face while a card turn runs. `flip` is the incoming BACK face
+  // during a turn, else null. They are split from `art` (the host's current want)
+  // so a replacement can keep showing the OLD art while the new one decodes and
+  // turns, instead of hard-swapping `src`. Refs mirror both so the commit path —
+  // an animationend, a fallback timer — reads the live value rather than the one
+  // captured when it was created.
+  const [displayed, setDisplayed] = useState(null)
+  const [flip, setFlip] = useState(null)
+  const displayedRef = useRef(null)
+  const flipRef = useRef(null)
+  /** Bumps on every target change so a superseded preload cannot commit. */
+  const flipGen = useRef(0)
+
+  /** Paint one artwork as the settled image and end any turn. */
+  const settle = (next) => {
+    displayedRef.current = next
+    flipRef.current = null
+    setDisplayed(next)
+    setFlip(null)
+  }
+  /** Land a running turn on its BACK face (the newest target). */
+  const commitFlip = () => {
+    const current = flipRef.current
+    if (current === null) return
+    settle(current.to)
+  }
+
+  // The stable identity the transition effect keys on. `art` is a fresh object
+  // every render (artOf builds it), so depending on it would re-run per frame;
+  // the source URL is what actually changes when a role or its artwork is
+  // swapped. Two roles sharing one URL therefore read as "no change" — correct:
+  // the pixels on screen are identical.
+  const targetKey = art === null ? null : art.src
+
+  /**
+   * What the box is sized to and (when settled) what src is painted.
+   *
+   * During a turn it is the INCOMING art (the box already has the new width, so
+   * the width switch happens under the cover of the rotation). When settled it is
+   * the displayed art. On the one render where the host has just named a role but
+   * the transition effect has not settled it yet, it falls back to `art` so the
+   * mascot never paints an empty frame.
+   *
+   * `art` (the host's current want) is what drives VISIBILITY, so clearing a role
+   * still hides the mascot in the same render it did before the flip existed.
+   */
+  const visible = art !== null
+  const painting = flip !== null ? flip.to : displayed !== null ? displayed : art
+  const width = visible ? painting.width : DEFAULT_WIDTH
+
+  useEffect(() => {
+    const gen = ++flipGen.current
+    const plan = planFlip(art, displayedRef.current, reducedMotion())
+    if (plan.flip === null) {
+      settle(plan.displayed)
+      return undefined
+    }
+    // Decode the new artwork first so the turn never reveals an empty box. A
+    // failed decode skips the turn and settles on the target, letting the
+    // settled image's own onError drop a truly broken role.
+    let cancelled = false
+    void preloadArtwork(plan.flip.to.src).then((ok) => {
+      if (cancelled || flipGen.current !== gen) return
+      if (!ok) {
+        settle(art)
+        return
+      }
+      displayedRef.current = plan.displayed
+      flipRef.current = plan.flip
+      setDisplayed(plan.displayed)
+      setFlip(plan.flip)
+    })
+    return () => {
+      cancelled = true
+    }
+  }, [targetKey])
+
+  // The commit normally comes from the card's own animationend. This fallback
+  // guarantees the turn lands even where that event never fires (a hidden tab
+  // pausing CSS animations, say): the mascot must never be stuck mid-turn showing
+  // two half-faded faces. It re-arms whenever the BACK face changes, so a turn
+  // retargeted to a newer role still commits that newest one.
+  useEffect(() => {
+    if (flip === null) return undefined
+    const timer = window.setTimeout(() => commitFlip(), FLIP_TOTAL_MS + FLIP_COMMIT_MARGIN_MS)
+    return () => window.clearTimeout(timer)
+  }, [flip])
 
   // The resting position is owned by React; the drag writes it imperatively
   // between commits so a pointer move never enters the render path. Only a drop
@@ -895,30 +1178,71 @@ const PersonaMascot = (props) => {
   const onPointerUp = (event) => endDrag(event, true)
   const onPointerCancel = (event) => endDrag(event, false)
 
-  const artNode =
-    art === null
-      ? null
+  // The card's own turn finished (or a face's did not): land the newest target.
+  // Guarding on target===currentTarget keeps a child's stray animationend from
+  // committing a turn that is still running.
+  const onFlipEnd = (event) => {
+    if (event.target != null && event.currentTarget != null && event.target !== event.currentTarget) return
+    commitFlip()
+  }
+
+  const artNode = !visible
+    ? null
+    : flip !== null
+      ? h(
+          'div',
+          { className: 'ps-mascot__stage', style: { height: `${flip.to.height}px` } },
+          h(
+            'div',
+            { className: 'ps-mascot__card', onAnimationEnd: onFlipEnd },
+            // Front face: the art already on screen. `object-fit: contain` lets a
+            // predecessor of another ratio letterbox into the new box instead of
+            // stretching. Both faces are inert so they never eat the drag.
+            h('img', {
+              className: 'ps-mascot__face ps-mascot__face--front',
+              src: displayed.src,
+              alt: '',
+              draggable: false,
+              decoding: 'async'
+            }),
+            // Back face: the incoming art, pre-rotated so it faces the viewer as
+            // the card lands.
+            h('img', {
+              className: 'ps-mascot__face ps-mascot__face--back',
+              src: flip.to.src,
+              alt: '',
+              draggable: false,
+              decoding: 'async'
+            })
+          )
+        )
       : h('img', {
           className: 'ps-mascot__art',
-          src: art.src,
+          src: painting.src,
           alt: '',
           draggable: false,
           decoding: 'async',
           onError: () => {
             // A URL that fails to decode must not leave a ghost box behind:
             // dropping the role from the local table makes `artOf` return null.
-            setRoles((current) => current.filter((item) => item?.id !== art.role))
+            setRoles((current) => current.filter((item) => item?.id !== painting.role))
           }
         })
+
+  const className = !visible
+    ? 'ps-mascot'
+    : flip !== null
+      ? 'ps-mascot is-shown is-flipping'
+      : 'ps-mascot is-shown'
 
   return h(
     'div',
     {
       ref: nodeRef,
-      className: art === null ? 'ps-mascot' : 'ps-mascot is-shown',
+      className,
       style: { width: `${width}px`, '--ps-scale': String(size) },
       role: 'img',
-      'aria-label': art === null ? t('mascotAria') : `${t('mascotAria')}: ${art.label}`,
+      'aria-label': visible ? `${t('mascotAria')}: ${art.label}` : t('mascotAria'),
       onPointerDown,
       onPointerMove,
       onPointerUp,
@@ -1080,6 +1404,9 @@ const unmountLater = (root, host) => {
  */
 export {
   CHANGED_EVENT,
+  MOTION_EVENT,
+  MOTION_KEY,
+  MOTION_VALUES,
   POS_EVENT,
   POS_KEY,
   SHOWN_EVENT,
@@ -1091,8 +1418,10 @@ export {
   broadcast,
   clearPos,
   clampSize,
+  readMotion,
   readShown,
   readSize,
+  writeMotion,
   writeSize
 }
 
@@ -1121,6 +1450,14 @@ export const mascotInternals = {
   viewport,
   writePos,
   writeSize,
+  normalizeMotion,
+  readMotion,
+  writeMotion,
+  MOTION_KEY,
+  planFlip,
+  reducedMotion,
+  FLIP_TOTAL_MS,
+  FLIP_COMMIT_MARGIN_MS,
   REVISION_POLL_MS,
   REVISION_SLOW_MS,
   MascotGate,
