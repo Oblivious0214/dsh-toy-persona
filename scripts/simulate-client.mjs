@@ -199,11 +199,18 @@ const scope = {
 
 const fetchCalls = []
 const roles = [{ id: 'teacher', name: 'Teacher', description: 'x', persona: 'You are a teacher' }]
+/** The role each session carries right now, as the `/session` route reports it. */
+const liveRoles = new Map()
 globalThis.fetch = async (url, options) => {
   fetchCalls.push({ url, options })
   const route = String(url).replace('/persona-switcher', '')
   if (route === '/roles' && (options?.method ?? 'GET') === 'GET') {
     return { ok: true, status: 200, json: async () => ({ ok: true, roles }) }
+  }
+  if (route.startsWith('/session?session=') && (options?.method ?? 'GET') === 'GET') {
+    const sessionId = decodeURIComponent(route.slice('/session?session='.length))
+    const liveRoleId = liveRoles.get(sessionId) ?? null
+    return { ok: true, status: 200, json: async () => ({ ok: true, roleId: liveRoleId, liveRoleId }) }
   }
   if (route === '/role' && options?.method === 'POST') {
     const body = JSON.parse(options.body)
@@ -217,6 +224,42 @@ globalThis.fetch = async (url, options) => {
     return { ok: true, status: 200, json: async () => ({ ok: true }) }
   }
   return { ok: false, status: 404, json: async () => ({ error: 'not found' }) }
+}
+
+/* ── The `/role` picker: what the client registers into the command shell ──
+ * The picker is a decoration of the Host's own `/role` command (a contribution
+ * with the same name would be refused by ui-commands), so what matters here is
+ * the spec handed to `decorate`: its options, its tick, and what a pick runs.
+ */
+const roleDecorations = []
+const commandUi = {
+  register() {
+    throw new Error('the picker must decorate the Host /role command, not contribute a second command')
+  },
+  decorate(spec) {
+    roleDecorations.push(spec)
+    return () => {}
+  }
+}
+/** The `/role` lines the picker asked the session to run. */
+const commandCalls = []
+/** Queued answers for the next `session.command()` calls; an Error rejects. */
+const commandOutcomes = []
+const sessions = {
+  binding(sessionId) {
+    return {
+      session: {
+        sessionId,
+        command: async (line) => {
+          commandCalls.push({ sessionId, line })
+          const queued = commandOutcomes.shift()
+          if (queued instanceof Error) throw queued
+          if (queued !== undefined) return queued
+          return { ok: true, value: { matched: true } }
+        }
+      }
+    }
+  }
 }
 
 const registered = []
@@ -244,6 +287,17 @@ const ctx = {
       sectionEntries.push({ ...options, component })
       return options
     }
+  },
+  inject(names, run) {
+    const services = { commandUi, sessions }
+    const missing = names.filter((name) => services[name] === undefined)
+    if (missing.length > 0) {
+      throw new Error(`the client asked for unavailable services: ${missing.join(', ')}`)
+    }
+    run({
+      get: (name) => services[name],
+      effect: (fn) => ctx.effect(fn)
+    })
   }
 }
 
@@ -298,6 +352,94 @@ bundleExports.apply(ctx)
     process.exit(1)
   }
   console.log('mascot dock survives dispose + re-install')
+}
+
+/* ── The `/role` picker ────────────────────────────────────────────────────
+ * The Host command keeps its catalog row and its argument claim; this bundle
+ * only hangs a bare-invocation popup on it. What the browser offers is decided
+ * entirely by the decoration spec, so this checks the spec the way
+ * ui-commands will call it: options per session, the tick on the role in
+ * force, and a pick that runs the Host command rather than switching by side
+ * effect.
+ */
+{
+  const fail = (message) => {
+    console.error(`FAIL: ${message}`)
+    process.exit(1)
+  }
+  const spec = roleDecorations.at(-1)
+  if (spec === undefined) fail('apply() registered no /role decoration')
+  if (spec.name !== 'role') fail(`decoration name mismatch: ${spec.name}`)
+  if (spec.ui?.kind !== 'popupSelect') fail(`the /role picker must be a popupSelect, got ${spec.ui?.kind}`)
+  const labels = spec.ui.searchLabels?.()
+  if (typeof labels?.placeholder !== 'string' || labels.placeholder === '') fail('no search placeholder')
+  if (typeof labels.empty !== 'string' || labels.empty === '') fail('no empty-catalogue text')
+  if (typeof labels.noResults !== 'string' || labels.noResults === '') fail('no no-match text')
+  if (typeof spec.ui.options !== 'function') fail('the picker has no options loader')
+  if (typeof spec.ui.onSelect !== 'function') fail('the picker has no selection handler')
+
+  // Nothing bound: "none" is first, ticked, and the library follows it.
+  liveRoles.set('s1', null)
+  const unbound = await spec.ui.options({ sessionId: 's1' })
+  if (unbound.length !== roles.length + 1) fail(`expected ${roles.length + 1} rows, got ${unbound.length}`)
+  if (unbound[0].id !== 'none') fail(`the first row must be none, got ${unbound[0]?.id}`)
+  if (unbound[0].active !== true) fail('none must be ticked when no role is bound')
+  if (!unbound.some((option) => option.id === 'teacher')) fail('the role library is missing from the options')
+  if (unbound.filter((option) => option.active === true).length !== 1) fail('exactly one row may be ticked')
+
+  // A role in force is ticked and says so, the way the search-engine picker does.
+  liveRoles.set('s1', 'teacher')
+  const bound = await spec.ui.options({ sessionId: 's1' })
+  const teacher = bound.find((option) => option.id === 'teacher')
+  if (teacher === undefined) fail('the bound role vanished from the options')
+  if (teacher.active !== true) fail('the role in force must be ticked')
+  if (!String(teacher.detail).includes('当前')) fail(`the ticked row must say it is current: ${teacher.detail}`)
+  if (bound[0].active !== false) fail('none must not stay ticked once a role is in force')
+  if (teacher.label !== 'Teacher') fail(`the label must be the role name, got ${teacher.label}`)
+
+  // A pick runs the Host command, so the switch keeps its announcements and
+  // its memory write instead of re-implementing them in the browser.
+  await spec.ui.onSelect(teacher, { sessionId: 's1' })
+  const picked = commandCalls.at(-1)
+  if (picked?.line !== '/role teacher') fail(`a pick must run "/role teacher", ran ${JSON.stringify(picked)}`)
+  if (picked?.sessionId !== 's1') fail(`the command must be addressed to the picker's session, got ${picked?.sessionId}`)
+  await spec.ui.onSelect(bound[0], { sessionId: 's1' })
+  if (commandCalls.at(-1)?.line !== '/role none') fail('picking none must run "/role none"')
+
+  // A refused switch rejects, so the popup can keep itself open and say why.
+  commandOutcomes.push({ ok: false, error: { message: 'role library is gone' } })
+  let surfaced = null
+  try {
+    await spec.ui.onSelect(teacher, { sessionId: 's1' })
+  } catch (error) {
+    surfaced = error
+  }
+  if (surfaced === null) fail('a failed switch must reject so the popup can report it')
+  if (!String(surfaced.message).includes('role library is gone')) {
+    fail(`the host's reason must reach the popup, got ${surfaced.message}`)
+  }
+
+  // Admitted but NOT matched: the shell took the line and nothing ran. Closing
+  // the popup here would look like a successful switch, so it has to reject.
+  commandOutcomes.push({ ok: true, value: { matched: false } })
+  surfaced = null
+  try {
+    await spec.ui.onSelect(teacher, { sessionId: 's1' })
+  } catch (error) {
+    surfaced = error
+  }
+  if (surfaced === null) fail('an unmatched command must reject instead of closing silently')
+  if (!String(surfaced.message).includes('/role teacher')) {
+    fail(`the unmatched error must name the line that did not run, got ${surfaced.message}`)
+  }
+
+  // An empty library still offers the way back to the deployment persona.
+  const seeded = roles.splice(0, roles.length)
+  liveRoles.set('s1', null)
+  const noneOnly = await spec.ui.options({ sessionId: 's1' })
+  if (noneOnly.length !== 1 || noneOnly[0].id !== 'none') fail('an empty library must leave the none row alone')
+  roles.push(...seeded)
+  console.log('/role picker: decoration, ticks and dispatch ok')
 }
 
 const sec = registered.find((r) => r.slotName === 'settings.section')

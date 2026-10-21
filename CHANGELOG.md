@@ -4,6 +4,26 @@ All notable changes to this project are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] - 2026-10-21
+
+### Added
+
+- **`/role` 可以从菜单点选了。** 输入框打出 `/` 后的命令列表里点 **role**，会弹出角色选择器：
+  顶部搜索框（按 label 与 detail 做不区分大小写的子串匹配，所以角色名、id、描述片段都能搜到），
+  当前生效的角色带勾并标「当前」，第一行固定是 `none`（回到部署人设），点一下就执行
+  `/role <id>`。列表每次打开都向宿主重读角色库，设置页里新增/删除的角色立刻出现或消失。
+- **实现方式是装饰宿主命令，不是替换它。** 客户端走 `commandUi.decorate()`：`/role list`、
+  `/role <id>`、`/role default <id>`、`/role none` 仍然原样落到宿主 handler（目录行、描述、参数
+  提示、生命周期日志都不变），只有「裸 /role」这一种触发改由弹窗回答——总览仍可用 `/role list`
+  查看。点选本身就是一次宿主命令执行，所以切换的角色变更提示、`sessions.json` 记忆写入和转录里
+  的命令节点全部照旧，浏览器侧没有复制任何切换逻辑。
+- **`GET /session` 多返回一个 `liveRoleId`。** `roleId` 仍是「记忆里的选择」，`liveRoleId` 是
+  「此刻绑定的角色」——两者可能不同（例如会话继承配置的 `defaultRole` 时，记忆里什么都没有）。
+  列表的勾读后者，所以默认角色、`/role` 切换、`/role none` 三种状态都显示正确。
+- **弹窗只在真正执行后才关闭。** 宿主「收了命令但没匹配上」（`value.matched === false`）时，
+  选择器不会静默关闭假装切好了，而是保留列表和搜索词、把原因显示出来，回车即可重试；
+  判断用 `=== false` 而非 `!== true`，所以旧宿主返回结构里没有 `matched` 字段时不会被误判成失败。
+
 ## [0.3.0] - 2026-10-18
 
 ### Added

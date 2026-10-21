@@ -20,6 +20,10 @@ DeepSeek Harness 的人设切换插件：把一个角色的**人设与语言风�
 
 - 🎭 **角色库**：`rolesDir` 下每个角色一个 `ROLE.md`（`id` / `name` / `description` + 人设正文）。
 - 🔄 **会话中途切换**：`/role <id>` 立即生效，下一步就是新的人设。
+- 🖱️ **点选切换**：输入框里打出 `/` 后点 **role**，直接弹出角色列表——顶部可搜索（名字、id、
+  描述都能搜），当前角色带勾，第一行固定是 `none`（回到部署人设），点一下就等于执行
+  `/role <id>`。列表每次打开都重读角色库，设置页里的增删立刻反映出来；命令本身的
+  `/role list`、`/role <id>`、`/role default <id>`、`/role none` 全部照旧可用。
 - 🪄 **走宿主原生人设机制**：把角色正文注册为该 agent 作用域下的独立 prompt section
   `persona-switcher:persona`（排在部署人设前缀之后，与内置 `dsh-subagent` 给子 agent 装人设
   是同一条路），不是拼接字符串，也不改会话的插件组合。
@@ -96,7 +100,7 @@ DeepSeek Harness 的人设切换插件：把一个角色的**人设与语言风�
   | `GET` | `/role?id=<id>` | 读一个角色 |
   | `POST` | `/role` | 新建 / 覆盖一个角色 |
   | `DELETE` | `/role?id=<id>` | 删除一个角色 |
-  | `GET` | `/session?session=<id>` | 该会话当前绑定的角色（未绑定则为 `roleId: null`） |
+  | `GET` | `/session?session=<id>` | 该会话记住的角色（`roleId`）与**此刻在生效**的角色（`liveRoleId`，未绑定均为 `null`）——`/role` 列表的勾读的是后者 |
   | `POST` | `/mascot?role=<id>` | 为角色导入立绘（JSON：`image` 为 data URL、`box` 为 `WxH`） |
   | `GET` | `/mascot-file/<file>` | 读回一张立绘 |
   | `DELETE` | `/mascot?role=<id>` | 清除该角色的立绘 |

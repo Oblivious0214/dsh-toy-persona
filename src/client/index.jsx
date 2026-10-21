@@ -8,6 +8,7 @@ import {
   settingsTextField
 } from '@deepseek-ai/dsh-client-ui-primitives'
 import { installMascot } from './mascot.jsx'
+import { installRolePicker } from './role-picker.js'
 import {
   CHANGED_EVENT,
   MOTION_EVENT,
@@ -1695,6 +1696,8 @@ const PersonaSwitcherSection = (props) => {
 export function apply(ctx) {
   const t = ctx.locale.bind(NS)
   ctx.effect(() => ctx.locale.register(NS, { zh, en }), 'persona-switcher: dictionaries')
+  // The picker needs the dictionaries above, so it is installed after them.
+  installRolePicker(ctx, { api, t })
   installStyle()
   ctx.effect(() => installPersonaNavIcon(t) || undefined, 'persona-switcher: nav icon')
   // The mascot rides in this same bundle: the loader allows exactly one factory
@@ -1787,7 +1790,13 @@ const zh = {
   artworkTooBig: '图片太大了，请压缩到 1 MB 以内',
   artworkTooSmall: '图片太小了，至少需要 8×8 像素',
   artworkTooLarge: '图片尺寸太大，单边不能超过 4096 像素',
-  artworkUnreadable: '这张图片无法读取，请换 png / jpeg / webp'
+  artworkUnreadable: '这张图片无法读取，请换 png / jpeg / webp',
+  rolePickSearch: '搜索角色…',
+  rolePickEmpty: '角色库里还没有角色，先到设置页新增一个。',
+  rolePickNoMatch: '没有匹配的角色。',
+  rolePickNone: 'none · 使用部署人设',
+  rolePickNoneHint: '不绑定角色',
+  rolePickCurrent: '当前'
 }
 
 const en = {
@@ -1857,5 +1866,11 @@ const en = {
   artworkTooBig: 'That image is too large — please get it under 1 MB',
   artworkTooSmall: 'That image is too small — at least 8×8 pixels',
   artworkTooLarge: 'That image is too large — no side may exceed 4096 pixels',
-  artworkUnreadable: 'That image cannot be read — use png, jpeg or webp'
+  artworkUnreadable: 'That image cannot be read — use png, jpeg or webp',
+  rolePickSearch: 'Search roles…',
+  rolePickEmpty: 'The role library is empty — add a role on the settings page first.',
+  rolePickNoMatch: 'No role matches.',
+  rolePickNone: 'none · deployment persona',
+  rolePickNoneHint: 'No role bound',
+  rolePickCurrent: 'current'
 }

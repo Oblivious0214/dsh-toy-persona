@@ -123,6 +123,13 @@ const fakeHost = () => {
     warns: [],
     infos: [],
     commands: [],
+    routes: [],
+    webServer: {
+      register: (definition) => {
+        app.routes.push(definition)
+        return () => {}
+      }
+    },
     ctx: {
       logger: {
         info: (message) => app.infos.push(String(message)),
@@ -145,6 +152,15 @@ const fakeHost = () => {
         return () => {}
       },
       inject(names, run) {
+        // The role-library API mounts through `webServer`; the `/session` route
+        // on it is what feeds the browser's `/role` picker.
+        if (names.includes('webServer')) {
+          run({
+            get: (name) => (name === 'webServer' ? app.webServer : undefined),
+            effect: (fn) => app.ctx.effect(fn)
+          })
+          return
+        }
         if (names.includes('agents')) run({ agents: { list: () => [] } })
       },
       commands: {
@@ -198,7 +214,7 @@ const scenario = async ({ seed = {}, config = {} } = {}) => {
   const seeded = createSessionState({ file: stateFile, warn: () => {} })
   for (const [sessionId, role] of Object.entries(seed)) await seeded.set(sessionId, role)
   const app = fakeHost()
-  host.apply(app.ctx, { rolesDir, exposeTool: false, announceRoleChange: true, ...config })
+  host.apply(app.ctx, { rolesDir, exposeTool: false, announceRoleChange: true, routePrefix: '/persona-switcher', ...config })
   await settle(() => app.infos.some((line) => line.includes('role library')), 'the load-time library scan')
   return { dir, rolesDir, stateFile, app }
 }
@@ -208,6 +224,33 @@ const runCommand = async (app, agent, rawInput) => {
   const command = app.commands.find((definition) => definition.name === 'role')
   assert.ok(command !== undefined, 'the /role command must be registered')
   return command.handler({ agent, rawInput })
+}
+
+/**
+ * Ask the role-library API one GET, the way the browser's `/role` picker does.
+ * @param app - the fake host.
+ * @param path - the path below the mounted prefix.
+ * @returns the parsed JSON payload.
+ */
+const getApi = async (app, path) => {
+  const route = app.routes.find((entry) => entry.kind === 'prefix')
+  assert.ok(route !== undefined, 'the role-library API must be mounted')
+  return new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`GET ${path} never answered`)), 5000)
+    const res = {
+      statusCode: 0,
+      writableEnded: false,
+      writeHead(status) {
+        this.statusCode = status
+      },
+      end(body) {
+        clearTimeout(timer)
+        this.writableEnded = true
+        resolve(JSON.parse(body))
+      }
+    }
+    route.handler({ url: `${route.path}${path}`, method: 'GET' }, res)
+  })
 }
 
 /** Drive one model step and return the notices it injects. */
@@ -317,9 +360,29 @@ await check('a remembered role that vanished from the library announces the hand
   assert.equal(notices[0].source.to, ROLE_ID, 'the notice must name the role that took over')
 })
 
+await check('GET /session reports the role in force, not only the remembered one', async () => {
+  // The browser's `/role` picker ticks the role in force, so the route has to
+  // answer the binding itself; the remembered value alone cannot say which role
+  // a live session actually carries.
+  const { app } = await scenario({ config: { defaultRole: ROLE_ID } })
+  const agent = fakeAgent('session-live')
+  await app.fire('agent/created', { agent })
+  const inherited = await getApi(app, '/session?session=session-live')
+  assert.equal(inherited.roleId, ROLE_ID, 'the remembered role stays readable')
+  assert.equal(inherited.liveRoleId, ROLE_ID, 'the role in force is the configured default')
+  await runCommand(app, agent, PLAIN_ID)
+  const switched = await getApi(app, '/session?session=session-live')
+  assert.equal(switched.roleId, PLAIN_ID, 'the memory follows the switch')
+  assert.equal(switched.liveRoleId, PLAIN_ID, 'the binding follows the switch without a restart')
+  await runCommand(app, agent, 'none')
+  const cleared = await getApi(app, '/session?session=session-live')
+  assert.equal(cleared.liveRoleId, null, 'the deployment persona is reported as no role')
+  assert.equal(cleared.roleId, null, 'the remembered opt-out stays the deployment persona')
+})
+
 if (problems.length > 0) {
   console.error(`verify-role-notice: ${problems.length} check(s) failed`)
   for (const problem of problems) console.error(`  - ${problem}`)
   process.exit(1)
 }
-console.log('verify-role-notice: all 7 checks hold')
+console.log('verify-role-notice: all 8 checks hold')

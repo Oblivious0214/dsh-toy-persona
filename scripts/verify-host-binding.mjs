@@ -283,6 +283,21 @@ check('a session without an id cannot be bound', () => {
   assert.throws(() => bindings.install({ ctx: {} }, ROLE_A), /no id/)
 })
 
+check('a bare session id answers the bound role, without an agent handle', () => {
+  const prompt = scopedPrompt()
+  const bindings = createPersonaBindings()
+  bindings.install(agentWith(prompt, 'session-1'), ROLE_A)
+  // The /session route and the picker know only the browser's session id; the
+  // binding table is keyed by it, so no agent lookup may be needed to render
+  // "which role is in force".
+  assert.equal(bindings.roleIdOfSession('session-1'), ROLE_A.id)
+  assert.equal(bindings.roleIdOfSession('session-2'), undefined, 'an unbound session has no role')
+  assert.equal(bindings.roleIdOfSession(''), undefined, 'an empty id is not a session')
+  assert.equal(bindings.roleIdOfSession(undefined), undefined, 'a missing id is not a session')
+  bindings.clear(agentWith(prompt, 'session-1'))
+  assert.equal(bindings.roleIdOfSession('session-1'), undefined, 'a cleared session has no role')
+})
+
 if (problems.length > 0) {
   console.error(`\nverify-host-binding: ${problems.length} problem(s)`)
   process.exit(1)
