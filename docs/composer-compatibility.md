@@ -22,6 +22,12 @@ installed **dsh-meme 0.1.64**, plus the locked SDK **0.2.0-rc.2** SlotCore.
 - New-role IDs are suggested from the library; a fresh read before saving rejects
   an ID already present. This is a UI conflict check, not a server-side atomic
   create-only guarantee against simultaneous writes by multiple clients.
+- The button reads the live binding on mount and after a selection; unbound means
+  "Persona", otherwise it shows the role name or ID. A 1.5-second `/revision` poll
+  detects command-driven changes without fetching persona prose every tick. Full
+  reads every 15 seconds and on window focus also pick up renamed role files;
+  hosts without the counter and transient failures retry after 5 seconds. Hidden
+  documents skip requests, and unmount cancels pending results and timers.
 
 ## Checks
 
@@ -36,6 +42,10 @@ installed **dsh-meme 0.1.64**, plus the locked SDK **0.2.0-rc.2** SlotCore.
   failure / retry; empty library; focus, arrows, Tab and Escape support; settings
   section navigation; original editor save and immediate list refresh; editable
   unused IDs (including gaps and IDs above 999); menu bounds at 1100px and 480px.
+- Label assertions: restored binding before opening the menu; name and ID fallback;
+  per-session labels; rejected selection and read failure do not overwrite the
+  confirmed label; command-driven changes while closed; clearing to "Persona";
+  long-name truncation with the full tooltip.
 
 The fixture is an isolated regression environment, not a full desktop end-to-end
 test. The installed DSH profile was not modified or restarted, and no real

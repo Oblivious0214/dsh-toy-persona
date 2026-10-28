@@ -8,6 +8,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- 人设按钮未绑定时显示「人设」，绑定后显示名称（无名称时显示 id）；随当前对话、恢复的绑定
+  及 `/role` 修改同步。长名称省略并提供完整名称提示，读取失败保留上次确认的名称。
 - 输入框底部新增「人设」按钮，独立注册在原生 `conversation.input.left` 列表槽，排在
   `dsh-meme` 表情按钮后、模型选择器前，不替换其他插件控件。支持名称 / id / 描述搜索、
   当前角色标记、键盘操作、失败重试与空库提示；通过既有 `/role` 命令切换当前对话。

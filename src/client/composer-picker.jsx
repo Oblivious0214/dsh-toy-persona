@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { loadOptions, selectRole } from './role-picker.js'
+import { loadOptions, loadRoleLabel, selectRole } from './role-picker.js'
 
 /** First unused suggestion; the settings editor still lets the user change it. */
 export const nextRoleId = (roles) => {
@@ -30,7 +30,7 @@ export const openRoleLibrary = async (slots, card, t) => {
 }
 
 const STYLE = `
-.ps-composer-trigger{font:inherit;font-size:13px;color:var(--dsw-alias-label-secondary,#667085);background:transparent;border:0;border-radius:8px;min-height:30px;padding:4px 8px;white-space:nowrap;cursor:pointer;flex:none}
+.ps-composer-trigger{font:inherit;font-size:13px;color:var(--dsw-alias-label-secondary,#667085);background:transparent;border:0;border-radius:8px;min-height:30px;max-width:min(160px,25vw);overflow:hidden;text-overflow:ellipsis;padding:4px 8px;white-space:nowrap;cursor:pointer;flex:none}
 .ps-composer-trigger:hover,.ps-composer-trigger[aria-expanded=true]{background:var(--dsw-alias-interactive-bg-hover,#eef1f6)}
 .ps-composer-trigger:focus-visible,.ps-composer-popup button:focus-visible,.ps-composer-popup input:focus-visible{outline:2px solid var(--dsw-alias-state-business-primary,#4c78ff);outline-offset:2px}
 .ps-composer-popup{position:fixed;z-index:999;box-sizing:border-box;width:min(320px,calc(100vw - 16px));max-height:calc(100vh - 24px);overflow:auto;padding:10px;border:1px solid var(--dsw-alias-border-l1,#d0d5dd);border-radius:12px;background:var(--dsw-alias-bg-layer-1,#fff);color:var(--dsw-alias-label-primary,#20242c);box-shadow:0 8px 28px #0002;font:13px/1.5 system-ui,sans-serif}
@@ -53,6 +53,8 @@ export function ComposerPicker({ sessionId, api, t, sessions, openLibrary }) {
   const [error, setError] = useState('')
   const [busy, setBusy] = useState(false)
   const [attempt, setAttempt] = useState(0)
+  const [roleLabel, setRoleLabel] = useState(null)
+  const [labelRefresh, setLabelRefresh] = useState(0)
   const [position, setPosition] = useState({ left: 8, bottom: 8 })
   const trigger = useRef(null)
   const popup = useRef(null)
@@ -63,6 +65,50 @@ export function ComposerPicker({ sessionId, api, t, sessions, openLibrary }) {
     alive.current = true
     return () => { alive.current = false }
   }, [])
+
+  useEffect(() => {
+    let cancelled = false
+    let inFlight = false
+    let timer
+    let lastRevision
+    let lastRead = 0
+    const refresh = async (force = false) => {
+      if (cancelled || inFlight) return
+      clearTimeout(timer)
+      inFlight = true
+      let delay = 1500
+      try {
+        if (document.visibilityState === 'hidden') return
+        // Changes through /role do not emit a client event. The cheap counter
+        // avoids fetching persona prose every tick. Periodic full reads also
+        // notice renamed role files and support hosts without /revision.
+        const revision = await api('GET', '/revision').then((value) => value?.revision, () => undefined)
+        if (force || revision === undefined || revision !== lastRevision || Date.now() - lastRead >= 15000) {
+          const label = await loadRoleLabel(sessionId, api)
+          if (!cancelled) setRoleLabel(label)
+          lastRead = Date.now()
+          lastRevision = revision
+        }
+        if (revision === undefined) delay = 5000
+      } catch {
+        // Keep the last confirmed label during a transient host failure.
+        delay = 5000
+      } finally {
+        inFlight = false
+        if (!cancelled) timer = setTimeout(() => void refresh(), delay)
+      }
+    }
+    const onFocus = () => { void refresh(true) }
+    void refresh(true)
+    window.addEventListener('focus', onFocus)
+    document.addEventListener('visibilitychange', onFocus)
+    return () => {
+      cancelled = true
+      clearTimeout(timer)
+      window.removeEventListener('focus', onFocus)
+      document.removeEventListener('visibilitychange', onFocus)
+    }
+  }, [sessionId, api, labelRefresh])
 
   useEffect(() => {
     if (!open) return
@@ -151,7 +197,8 @@ export function ComposerPicker({ sessionId, api, t, sessions, openLibrary }) {
   }
   return <>
     <button type="button" className="ps-composer-trigger" ref={trigger} aria-haspopup="dialog"
-      aria-expanded={open} onClick={() => setOpen(!open)}>{t('composerPersona')}</button>
+      title={roleLabel ?? t('composerPersona')} aria-expanded={open}
+      onClick={() => setOpen(!open)}>{roleLabel ?? t('composerPersona')}</button>
     {open && createPortal(<div className="ps-composer-popup" ref={popup} style={position}
       role="dialog" aria-label={t('composerPersona')} onKeyDown={moveFocus}>
       <input ref={searchInput} value={search} onChange={(event) => setSearch(event.target.value)}
@@ -161,7 +208,10 @@ export function ComposerPicker({ sessionId, api, t, sessions, openLibrary }) {
       {status === 'error' && <button type="button" onClick={() => setAttempt(attempt + 1)}>{t('composerRetry')}</button>}
       {status === 'ready' && <>
         {filtered.map((row) => <button type="button" key={row.id} disabled={busy}
-          aria-pressed={row.active} onClick={() => run(() => selectRole(row, { sessionId }, { sessions }))}>
+          aria-pressed={row.active} onClick={() => run(async () => {
+            await selectRole(row, { sessionId }, { sessions })
+            if (alive.current) setLabelRefresh((value) => value + 1)
+          })}>
           {row.active ? '✓ ' : ''}{row.label}<small>{row.detail}</small>
         </button>)}
         {rows.length === 1 && <p>{t('rolePickEmpty')}</p>}

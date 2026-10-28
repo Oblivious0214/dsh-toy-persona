@@ -21,6 +21,8 @@ DeepSeek Harness 的人设切换插件：把一个角色的**人设与语言风�
 - 🎭 **角色库**：`rolesDir` 下每个角色一个 `ROLE.md`（`id` / `name` / `description` + 人设正文）。
 - 🔄 **会话中途切换**：`/role <id>` 立即生效，下一步就是新的人设。
 - 🎭 **输入栏人设按钮**：权限与表情按钮之后、模型选择器之前，点击 **人设** 搜索并选择本地角色；
+  未绑定时按钮显示「人设」，绑定后直接显示该角色的名称，没有名称则显示 id。切换对话、重启恢复
+  或通过 `/role` 修改绑定后都会同步；长名称省略显示，悬停可查看全名。
   优先显示名称，未命名时显示 id，当前角色带勾。每次打开重新读取角色库，切换沿用 `/role` 的
   会话绑定、重启恢复和提示词注入。菜单里的 **添加人设** 打开原有「设置 → 人设切换 → 角色库」
   新增表单；id 自动建议 `char001`、`char002`……并跳过已有 id，仍可手动修改。有未完成的编辑时保留该表单。
@@ -429,8 +431,10 @@ browser side, and never changes which tools the model can call. Switching a live
 job.
 
 The composer also has a **Persona** button after permissions / `dsh-meme` and before the
-model selector. It searches local names, IDs and descriptions and dispatches the same `/role`
-command to that composer's session, preserving drafts and restart persistence. **Add persona**
+model selector. Its label is **Persona** when unbound, otherwise the active role's name (or ID
+if unnamed), including restored bindings and subsequent `/role` changes. Long labels truncate
+with a full-name tooltip. It searches local names, IDs and descriptions and dispatches the same
+`/role` command to that composer's session, preserving drafts and restart persistence. **Add persona**
 opens the existing settings library editor with the first unused `char001`, `char002`, … ID
 pre-filled and editable. An unfinished settings edit is preserved. The button occupies its own
 native list-slot entry, so other plugins keep their controls.

@@ -24,6 +24,8 @@ const fixtures = window.fixtures = {
   ],
   live: { a: 'char001', b: null },
   commands: [],
+  revision: 0,
+  failSession: false,
   fail: false,
   slow: 0,
   rejected: false,
@@ -38,7 +40,12 @@ window.fetch = async (url, init) => {
     if (fixtures.fail) return { ok: false, status: 503, json: async () => ({ error: 'Library offline' }) }
     payload = { roles: fixtures.roles }
   } else if (path.pathname.endsWith('/session')) {
+    if (fixtures.failSession) return { ok: false, status: 503, json: async () => ({ error: 'Session offline' }) }
     payload = { liveRoleId: fixtures.live[path.searchParams.get('session')], roleId: 'char001' }
+  } else if (path.pathname.endsWith('/revision')) {
+    payload = { revision: fixtures.revision }
+  } else if (path.pathname.endsWith('/role') && init?.method === 'GET') {
+    payload = { role: fixtures.roles.find((role) => role.id === path.searchParams.get('id')) }
   } else if (path.pathname.endsWith('/role') && init?.method === 'POST') {
     const role = JSON.parse(init.body)
     fixtures.roles.push(role)
@@ -51,6 +58,7 @@ const sessions = {
     fixtures.commands.push({ sessionId, line })
     if (fixtures.rejected) return { ok: false, error: { message: 'Session unavailable' } }
     fixtures.live[sessionId] = line === '/role none' ? null : line.slice(6)
+    fixtures.revision += 1
     return { ok: true, value: { matched: true } }
   } } })
 }
