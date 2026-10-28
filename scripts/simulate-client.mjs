@@ -318,7 +318,7 @@ bundleExports.apply(ctx)
  * one place that applies it the way the host does, so the guard lives here.
  */
 {
-  const dockId = 'dsh-persona-switcher-mascot-dock'
+  const dockId = 'dsh-toy-persona-mascot-dock'
   // "is it still on the page", NOT "does getElementById know the id": this
   // simulation's removeChild detaches a node but leaves it in the id map, so an
   // id lookup alone reports a removed dock as present and the guard silently
@@ -533,7 +533,7 @@ await injected.discard()
 // must still be there — a bundle that forgot to install it would pass every
 // check above.
 if (mountedRoot === null) throw new Error('the mascot never created its root')
-if (mountedRoot.container.id !== 'dsh-persona-switcher-mascot-dock') {
+if (mountedRoot.container.id !== 'dsh-toy-persona-mascot-dock') {
   throw new Error(`mascot dock id mismatch: ${mountedRoot.container.id}`)
 }
 if (mountedRoot.rendered === null) throw new Error('the mascot root rendered nothing')

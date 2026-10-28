@@ -13,9 +13,9 @@ import { createRoot } from 'react-dom/client'
  * nice-to-have — both plugins are expected on screen at once. Everything that
  * could collide is therefore namespaced or deliberately avoided:
  *
- *   - own dock id `#dsh-persona-switcher-mascot-dock` (theirs is
+ *   - own dock id `#dsh-toy-persona-mascot-dock` (theirs is
  *     `#dsh-wallpaper-engine-rope-dock`), own style id, own `localStorage`
- *     namespace (`dsh-persona-switcher:*` vs `dsh-wallpaper-engine:*`);
+ *     namespace (`dsh-toy-persona:*` vs `dsh-wallpaper-engine:*`);
  *   - mascot `z-index: 995` against their rope's `996` and their repo panel's
  *     `995`: the rope keeps the higher layer and never loses a pointer to us;
  *   - `sidebarRight` is only ever READ (for its `mounted` snapshot); we never
@@ -36,17 +36,17 @@ import { createRoot } from 'react-dom/client'
  */
 
 /** Own dock id — distinct from the wallpaper engine's rope dock. */
-const DOCK_ID = 'dsh-persona-switcher-mascot-dock'
+const DOCK_ID = 'dsh-toy-persona-mascot-dock'
 /** Own style id — distinct from the settings page's `persona-switcher-settings-style`. */
 const STYLE_ID = 'persona-switcher-mascot-style'
 /** URL prefix of the role library API (`src/client/index.jsx` owns the base too). */
 const API_BASE = '/persona-switcher'
 /** Master switch, owned by the settings page and read here (client-side preference). */
-const SHOWN_KEY = 'dsh-persona-switcher:mascot-shown'
+const SHOWN_KEY = 'dsh-toy-persona:mascot-shown'
 /** Resting position, `{ x, y }` in viewport pixels, top-left of the artwork box. */
-const POS_KEY = 'dsh-persona-switcher:mascot-pos'
+const POS_KEY = 'dsh-toy-persona:mascot-pos'
 /** Artwork size multiplier. The host keeps ownership of a role's REAL pixel size. */
-const SIZE_KEY = 'dsh-persona-switcher:mascot-size'
+const SIZE_KEY = 'dsh-toy-persona:mascot-size'
 /**
  * Animation preference for the role-switch turn: 'system' (default — honour the
  * OS `prefers-reduced-motion`), 'always' (turn even under reduce), or 'never'
@@ -54,7 +54,7 @@ const SIZE_KEY = 'dsh-persona-switcher:mascot-size'
  * machine whose OS animation setting is off can still see the turn without
  * changing a system-wide accessibility switch.
  */
-const MOTION_KEY = 'dsh-persona-switcher:mascot-motion'
+const MOTION_KEY = 'dsh-toy-persona:mascot-motion'
 /** The three animation-preference values, in the order the settings page shows them. */
 const MOTION_VALUES = ['system', 'always', 'never']
 /** Smallest and largest multiplier the settings page offers. */

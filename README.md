@@ -1,4 +1,18 @@
+# 人设切换（改版）
+
+包名：`dsh-toy-persona`；当前版本：`0.3.2`。基于 `dsh-persona-switcher` 的既有版本继续更新，保留来源说明与许可证。目标宿主：DSH 0.2.1-rc.3，源码提交 `22ddee3792402c3e70ec5f86a63c3e3e895a2f60`。
+
+安装包名、客户端模块名和宿主 bundle 引用已统一；旧的配置条目 ID 保留以兼容已有设置。
+
+安装：使用 `dsh-toy-persona-0.3.2.tgz` 添加到桌面 profile。请先移除旧包 `dsh-persona-switcher`，避免同时加载。
+
+## 迁移前的功能与来源说明
+
+以下保留原项目的功能和来源记录；其中旧包名及本地路径不是新版安装入口。
+
 # dsh-persona-switcher
+
+本地媒体改造分支：`feat/persona-media`，基于 `feat/composer-persona-picker`。[人设音色与表情包改造计划](docs/persona-media.md) 记录后续范围；当前尚未接入媒体绑定。
 
 [![CI](https://github.com/yupaoa/dsh-persona-switcher/actions/workflows/ci.yml/badge.svg)](https://github.com/yupaoa/dsh-persona-switcher/actions/workflows/ci.yml)
 [![npm](https://img.shields.io/npm/v/dsh-persona-switcher.svg)](https://www.npmjs.com/package/dsh-persona-switcher)

@@ -1,6 +1,6 @@
 {
-  "name": "dsh-persona-switcher",
-  "version": "0.3.1",
+  "name": "dsh-toy-persona",
+  "version": "0.3.2",
   "description": "Switch the model's persona and speaking style mid-session without touching its tools or skills, and give a role an on-screen mascot. 角色切换：只切换模型的人设与语言风格，不动工具与技能，可为角色绑定屏幕吉祥物立绘。",
   "keywords": [
     "deepseek-harness",
@@ -19,12 +19,12 @@
   },
   "repository": {
     "type": "git",
-    "url": "git+https://github.com/yupaoa/dsh-persona-switcher.git"
+    "url": "git+https://github.com/Oblivious0214/dsh-toy-persona.git"
   },
   "bugs": {
-    "url": "https://github.com/yupaoa/dsh-persona-switcher/issues"
+    "url": "https://github.com/Oblivious0214/dsh-toy-persona/issues"
   },
-  "homepage": "https://github.com/yupaoa/dsh-persona-switcher#readme",
+  "homepage": "https://github.com/Oblivious0214/dsh-toy-persona#readme",
   "engines": {
     "node": "^22.19.0 || >=24.0.0",
     "dsh": ">=0.2.0-rc.1 || >=0.2.1-rc.1"

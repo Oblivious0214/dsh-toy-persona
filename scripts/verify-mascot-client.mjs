@@ -795,7 +795,7 @@ check('a corrupt switch value stays on (never silently hides)', readShown() === 
 localStorageStub.removeItem(SHOWN_KEY)
 check(
   'own storage keys, namespaced away from the wallpaper engine',
-  SHOWN_KEY.startsWith('dsh-persona-switcher:') && POS_KEY.startsWith('dsh-persona-switcher:') && MOTION_KEY.startsWith('dsh-persona-switcher:'),
+  SHOWN_KEY.startsWith('dsh-toy-persona:') && POS_KEY.startsWith('dsh-toy-persona:') && MOTION_KEY.startsWith('dsh-toy-persona:'),
   `${SHOWN_KEY} / ${POS_KEY} / ${MOTION_KEY}`
 )
 check(
@@ -853,7 +853,7 @@ check(
     console.error('installMascot refused to mount; the remaining checks need it')
     process.exit(1)
   }
-  const dock = documentStub.getElementById('dsh-persona-switcher-mascot-dock')
+  const dock = documentStub.getElementById('dsh-toy-persona-mascot-dock')
   check('installMascot creates its own dock on <body>', dock !== null && dock.parentNode === documentStub.body)
   check('dock id is distinct from the rope dock', dock !== null && dock.id !== 'dsh-wallpaper-engine-rope-dock')
   const styleNode = documentStub.getElementById('persona-switcher-mascot-style')
@@ -913,20 +913,20 @@ check(
   // effect mount a second root onto a node a stale unmount was about to remove —
   // the mascot then vanished with no error anywhere. Its CONTENT must be gone.
   check('disposer empties the dock', dock.childNodes.length === 0, `${dock.childNodes.length} child node(s) left`)
-  check('disposer keeps the dock node for reuse', documentStub.getElementById('dsh-persona-switcher-mascot-dock') === dock)
+  check('disposer keeps the dock node for reuse', documentStub.getElementById('dsh-toy-persona-mascot-dock') === dock)
   check('disposer leaves the settings stylesheet alone', documentStub.getElementById('persona-switcher-settings-style') === null)
 }
 
 /* ── 2b. The mount is skippable (a host without a DOM or without a context) ── */
 {
-  const before = documentStub.getElementById('dsh-persona-switcher-mascot-dock')
+  const before = documentStub.getElementById('dsh-toy-persona-mascot-dock')
   check('the dock from the previous install is the one still on the page', before !== null)
   check('installMascot needs a ctx.effect', installMascot({}, IDENTITY) === undefined)
   const bare = installMascot({ effect: () => () => {} }, IDENTITY)
   check('a ctx without get() still mounts (sidebarRight is optional)', typeof bare === 'function')
   bare()
   await settle(20)
-  check('that install reused the same dock node', documentStub.getElementById('dsh-persona-switcher-mascot-dock') === before)
+  check('that install reused the same dock node', documentStub.getElementById('dsh-toy-persona-mascot-dock') === before)
 }
 
 /* ── 3. Silent states: switch off, no role, no artwork, no seat ───────── */

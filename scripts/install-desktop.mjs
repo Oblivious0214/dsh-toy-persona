@@ -68,7 +68,7 @@ if (result.status !== 0) {
   process.exit(result.status ?? 1)
 }
 
-const installedRoot = join(profileDir, 'node_modules', 'dsh-persona-switcher')
+const installedRoot = join(profileDir, 'node_modules', 'dsh-toy-persona')
 
 /**
  * Copy this build over the installed one, file by file.
@@ -125,10 +125,10 @@ console.log(`install-desktop: installed ${version}; this build is ${built}`)
 // the version, for a directory dependency. Keep it honest.
 const profileManifestPath = join(profileDir, 'package.json')
 const profileManifest = JSON.parse(readFileSync(profileManifestPath, 'utf8'))
-const declared = profileManifest.dependencies?.['dsh-persona-switcher']
+const declared = profileManifest.dependencies?.['dsh-toy-persona']
 if (declared !== undefined && declared.startsWith('file:')) {
-  if (profileManifest.dependencies['dsh-persona-switcher'] !== spec) {
-    profileManifest.dependencies['dsh-persona-switcher'] = spec
+  if (profileManifest.dependencies['dsh-toy-persona'] !== spec) {
+    profileManifest.dependencies['dsh-toy-persona'] = spec
     writeFileSync(profileManifestPath, `${JSON.stringify(profileManifest, null, 2)}\n`, 'utf8')
     console.log(`install-desktop: profile dependency pinned to ${spec}`)
   }
