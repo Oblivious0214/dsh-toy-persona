@@ -285,6 +285,8 @@ for (const entry of [
   'lib/index.js',
   'lib/client.js',
   'lib/persona-binding.js',
+  'lib/meme-preference.js',
+  'lib/meme-compat.js',
   'lib/session-state.js',
   'cordis.patch.yml'
 ]) {

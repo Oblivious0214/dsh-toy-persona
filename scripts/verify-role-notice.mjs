@@ -347,7 +347,7 @@ await check('a resumed session restored onto the same role injects no notice', a
   assert.deepEqual(await step(app, agent), [], 'restoring what the session already had is not a role change')
 })
 
-await check('a remembered role that vanished from the library announces the hand-over', async () => {
+await check('a removed role does not fall back to a legacy default', async () => {
   const { app } = await scenario({
     seed: { 'session-ghost': 'ghost-role' },
     config: { defaultRole: ROLE_ID }
@@ -355,9 +355,8 @@ await check('a remembered role that vanished from the library announces the hand
   const agent = fakeAgent('session-ghost')
   await app.fire('agent/created', { agent })
   const notices = await step(app, agent)
-  assert.equal(notices.length, 1, `expected exactly one notice, got ${JSON.stringify(notices.map((n) => n.source))}`)
-  assert.equal(notices[0].source.from, 'ghost-role', 'the notice must name the role that is gone')
-  assert.equal(notices[0].source.to, ROLE_ID, 'the notice must name the role that took over')
+  assert.deepEqual(notices, [], 'no automatic hand-over to a default role')
+  assert.equal(agent.prompt.sections.size, 0)
 })
 
 await check('GET /session reports the role in force, not only the remembered one', async () => {
@@ -368,8 +367,8 @@ await check('GET /session reports the role in force, not only the remembered one
   const agent = fakeAgent('session-live')
   await app.fire('agent/created', { agent })
   const inherited = await getApi(app, '/session?session=session-live')
-  assert.equal(inherited.roleId, ROLE_ID, 'the remembered role stays readable')
-  assert.equal(inherited.liveRoleId, ROLE_ID, 'the role in force is the configured default')
+  assert.equal(inherited.roleId, null, 'no role is remembered until selected')
+  assert.equal(inherited.liveRoleId, null, 'legacy default does not select a role')
   await runCommand(app, agent, PLAIN_ID)
   const switched = await getApi(app, '/session?session=session-live')
   assert.equal(switched.roleId, PLAIN_ID, 'the memory follows the switch')

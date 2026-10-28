@@ -284,17 +284,51 @@ await check('a session that chose the deployment persona is never reclaimed by t
     config: { defaultRole: ROLE_ID }
   })
   const agent = fakeAgent('session-opted')
-  await app.fire('agent/created', { agent })
+  await app.fire('agent/created', { agent, source:'startup' })
   assert.equal(agent.prompt.sections.size, 0, 'the opt-out must survive the default')
   const memory = await readMemory(stateFile)
   assert.equal(memory.get('session-opted'), null, 'the opt-out is still recorded')
 })
 
-await check('a brand-new session gets the configured default at creation', async () => {
-  const { app } = await scenario({ config: { defaultRole: PLAIN_ID } })
+await check('a brand-new session adopts and remembers the configured default before step one', async () => {
+  const { app, stateFile } = await scenario({ config: { defaultRole: PLAIN_ID } })
   const agent = fakeAgent('session-fresh')
-  await app.fire('agent/created', { agent, source: 'user' })
+  await app.fire('agent/created', { agent, source: 'startup' })
   assert.equal(agent.prompt.sections.get(PERSONA_SECTION), PLAIN_PERSONA)
+  assert.equal((await readMemory(stateFile)).get('session-fresh'), PLAIN_ID)
+})
+
+await check('unselected resumed and already live conversations do not adopt a new default', async () => {
+  const live = fakeAgent('session-already-live')
+  const { app } = await scenario({config:{defaultRole:PLAIN_ID},liveAgents:[live]})
+  const resumed = fakeAgent('session-unselected-resume')
+  await app.fire('agent/created',{agent:resumed,source:'resume'})
+  for(const agent of [live,resumed]){
+    await app.fire('agent/pre-step',{agent,messages:[]},async()=>({kind:'continue',messages:[]}))
+    assert.equal(agent.prompt.sections.size,0)
+  }
+})
+
+await check('remembered roles override the new-session default', async () => {
+  const {app}=await scenario({seed:{'session-chosen':ROLE_ID},config:{defaultRole:PLAIN_ID}})
+  const agent=fakeAgent('session-chosen')
+  await app.fire('agent/created',{agent,source:'startup'})
+  assert.equal(agent.prompt.sections.get(PERSONA_SECTION),ROLE_PERSONA)
+})
+
+await check('changing or clearing the default affects only subsequent new conversations', async () => {
+  let selected=PLAIN_ID
+  const {app}=await scenario({config:{defaultRole:{get:()=>selected}}})
+  const first=fakeAgent('first-new'),second=fakeAgent('second-new'),third=fakeAgent('third-new')
+  await app.fire('agent/created',{agent:first,source:'startup'})
+  selected=ROLE_ID
+  await app.fire('agent/created',{agent:second,source:'startup'})
+  selected=''
+  await app.fire('agent/created',{agent:third,source:'startup'})
+  await app.fire('agent/pre-step',{agent:first,messages:[]},async()=>({kind:'continue',messages:[]}))
+  assert.equal(first.prompt.sections.get(PERSONA_SECTION),PLAIN_PERSONA)
+  assert.equal(second.prompt.sections.get(PERSONA_SECTION),ROLE_PERSONA)
+  assert.equal(third.prompt.sections.size,0)
 })
 
 await check('a remembered role that left the library is forgotten at creation', async () => {
@@ -345,4 +379,4 @@ if (problems.length > 0) {
   for (const problem of problems) console.error(`  - ${problem}`)
   process.exit(1)
 }
-console.log('verify-created-bind: all 8 checks hold')
+console.log('verify-created-bind: all 11 checks hold')

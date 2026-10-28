@@ -1,6 +1,7 @@
 import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
-import { loadOptions, loadRoleLabel, selectRole } from './role-picker.js'
+import { loadOptions, loadSessionRole, selectRole } from './role-picker.js'
+import { fishVoice } from './fish-voice.js'
 
 /** First unused suggestion; the settings editor still lets the user change it. */
 export const nextRoleId = (roles) => {
@@ -51,6 +52,7 @@ export function ComposerPicker({ sessionId, api, t, sessions, openLibrary }) {
   const [search, setSearch] = useState('')
   const [status, setStatus] = useState('loading')
   const [error, setError] = useState('')
+  const [voiceError, setVoiceError] = useState('')
   const [busy, setBusy] = useState(false)
   const [attempt, setAttempt] = useState(0)
   const [roleLabel, setRoleLabel] = useState(null)
@@ -72,6 +74,7 @@ export function ComposerPicker({ sessionId, api, t, sessions, openLibrary }) {
     let timer
     let lastRevision
     let lastRead = 0
+    let lastVoiceKey
     const refresh = async (force = false) => {
       if (cancelled || inFlight) return
       clearTimeout(timer)
@@ -84,8 +87,18 @@ export function ComposerPicker({ sessionId, api, t, sessions, openLibrary }) {
         // notice renamed role files and support hosts without /revision.
         const revision = await api('GET', '/revision').then((value) => value?.revision, () => undefined)
         if (force || revision === undefined || revision !== lastRevision || Date.now() - lastRead >= 15000) {
-          const label = await loadRoleLabel(sessionId, api)
-          if (!cancelled) setRoleLabel(label)
+          const role = await loadSessionRole(sessionId, api)
+          if (cancelled) return
+          setRoleLabel(role === null ? null : role.name?.trim() || role.id)
+          const voiceKey = JSON.stringify([role?.id, role?.voiceId])
+          if ((force || voiceKey !== lastVoiceKey) && trigger.current?.getClientRects().length) {
+            try {
+              await fishVoice.sync(role?.voiceId, () => !cancelled && !pending.current && document.visibilityState !== 'hidden')
+              if (!cancelled) { lastVoiceKey = voiceKey; setVoiceError('') }
+            } catch (reason) {
+              if (!cancelled) setVoiceError(`人格已生效，音色未同步：${reason.message}`)
+            }
+          }
           lastRead = Date.now()
           lastRevision = revision
         }
@@ -101,11 +114,13 @@ export function ComposerPicker({ sessionId, api, t, sessions, openLibrary }) {
     const onFocus = () => { void refresh(true) }
     void refresh(true)
     window.addEventListener('focus', onFocus)
+    window.addEventListener('persona-switcher:voice-changed', onFocus)
     document.addEventListener('visibilitychange', onFocus)
     return () => {
       cancelled = true
       clearTimeout(timer)
       window.removeEventListener('focus', onFocus)
+      window.removeEventListener('persona-switcher:voice-changed', onFocus)
       document.removeEventListener('visibilitychange', onFocus)
     }
   }, [sessionId, api, labelRefresh])
@@ -197,8 +212,9 @@ export function ComposerPicker({ sessionId, api, t, sessions, openLibrary }) {
   }
   return <>
     <button type="button" className="ps-composer-trigger" ref={trigger} aria-haspopup="dialog"
-      title={roleLabel ?? t('composerPersona')} aria-expanded={open}
+      title={voiceError || roleLabel || t('composerPersona')} aria-expanded={open}
       onClick={() => setOpen(!open)}>{roleLabel ?? t('composerPersona')}</button>
+    {voiceError && <span role="status" title={voiceError} style={{fontSize:12,color:'var(--dsw-alias-state-error-primary,#c52b35)'}}>音色未同步</span>}
     {open && createPortal(<div className="ps-composer-popup" ref={popup} style={position}
       role="dialog" aria-label={t('composerPersona')} onKeyDown={moveFocus}>
       <input ref={searchInput} value={search} onChange={(event) => setSearch(event.target.value)}
@@ -209,8 +225,8 @@ export function ComposerPicker({ sessionId, api, t, sessions, openLibrary }) {
       {status === 'ready' && <>
         {filtered.map((row) => <button type="button" key={row.id} disabled={busy}
           aria-pressed={row.active} onClick={() => run(async () => {
-            await selectRole(row, { sessionId }, { sessions })
-            if (alive.current) setLabelRefresh((value) => value + 1)
+            try { await selectRole(row, { sessionId }, { sessions, api }) }
+            finally { if (alive.current) setLabelRefresh((value) => value + 1) }
           })}>
           {row.active ? '✓ ' : ''}{row.label}<small>{row.detail}</small>
         </button>)}

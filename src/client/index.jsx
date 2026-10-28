@@ -1,4 +1,4 @@
-import { useEffect } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import {
   Button,
   SettingsForm,
@@ -7,9 +7,11 @@ import {
   Switch,
   settingsTextField
 } from '@deepseek-ai/dsh-client-ui-primitives'
-import { installMascot } from './mascot.jsx'
 import { installRolePicker } from './role-picker.js'
 import { installComposerPicker, nextRoleId } from './composer-picker.jsx'
+import { fishVoice, playVoicePreview, stopVoicePreview } from './fish-voice.js'
+import { memeBridge } from './meme-preference.js'
+import { emptyMemePreference, memePreferencePrompt, MEME_FREQUENCIES } from '../../lib/meme-preference.js'
 import {
   CHANGED_EVENT,
   MOTION_EVENT,
@@ -59,7 +61,7 @@ const API_BASE = '/persona-switcher'
 export const inject = ['slots', 'locale', 'configForms']
 
 /** A role row as the role library reports it. */
-const emptyRole = () => ({ id: '', name: '', description: '', persona: '' })
+const emptyRole = () => ({ id: '', name: '', description: '', persona: '', voiceId: '', voicePreviewText: '' })
 
 /** Role ids: lowercase letters, digits, hyphens (leading alnum). */
 const ID_PATTERN = /^[a-z0-9][a-z0-9-]*$/
@@ -123,6 +125,7 @@ const measureDataUrl = (dataUrl) =>
  * it, so the input is triggered imperatively and found through this map.
  */
 const artworkInputs = new Map()
+const avatarInputs = new Map()
 
 /**
  * Call the role library API.
@@ -149,6 +152,8 @@ const api = async (method, path, body) => {
  */
 class PersonaSwitcherCardController {
   scope
+  ctx
+  sessions
   t
   form
   /** The section's snapshot store, rebuilt by the form on every publish. */
@@ -161,6 +166,8 @@ class PersonaSwitcherCardController {
   /** `true` while the editor stages a brand-new role (id still editable). */
   editingNew = false
   busy = false
+  /** Only show the shell action while this settings section is mounted. */
+  sectionVisible = false
   /** Master mascot switch, mirrored from the client-side key. */
   mascotShown = true
   /** Mascot size multiplier, mirrored from the client-side key. */
@@ -168,7 +175,7 @@ class PersonaSwitcherCardController {
   /** Animation preference for the role-switch turn: 'system' | 'always' | 'never'. */
   mascotMotion = 'system'
   /** Which tab of the page is showing: `general` | `library`. */
-  tab = 'general'
+  tab = 'library'
   /** Role id waiting for a delete confirmation, or `null`. */
   confirming = null
   /** Latest load wins; an older response never overwrites a newer one. */
@@ -178,7 +185,8 @@ class PersonaSwitcherCardController {
    * @param scope - the shared configuration form for this card's namespace.
    * @param t - the bound dictionary.
    */
-  constructor(scope, t) {
+  constructor(scope, t, ctx) {
+    this.ctx = ctx
     this.scope = scope
     this.t = t
     this.form = new SettingsFormModel(scope, [settingsTextField('defaultRole')])
@@ -194,6 +202,7 @@ class PersonaSwitcherCardController {
     return {
       ...this.form.shell(),
       defaultRole: this.form.field('defaultRole'),
+      defaultRoleId: this.scope.getSnapshot?.()?.value?.defaultRole ?? '',
       // The optional chain has to cover `getSnapshot` itself, not just its
       // result: this runs inside the store's publish (a render path), so a form
       // model without a snapshot would throw while the settings screen paints.
@@ -204,6 +213,7 @@ class PersonaSwitcherCardController {
       editing: this.editing === null ? null : { ...this.editing },
       editingNew: this.editingNew,
       busy: this.busy,
+      sectionVisible: this.sectionVisible,
       tab: this.tab,
       confirming: this.confirming,
       mascotShown: this.mascotShown,
@@ -239,6 +249,19 @@ class PersonaSwitcherCardController {
     this.form.publish()
   }
 
+  /** Persist the new-session default independently of the role text draft. */
+  async toggleDefault(role) {
+    if (this.busy || this.editingNew || !this.roles.some(item => item.id === role.id)) return
+    this.busy = true
+    this.error = null
+    this.form.publish()
+    try {
+      const current = this.scope.getSnapshot?.()?.value?.defaultRole ?? ''
+      if (!await this.scope.set('defaultRole', current === role.id ? '' : role.id)) throw new Error(this.t('defaultSaveFailed'))
+    } catch (cause) { this.error = cause.message }
+    finally { this.busy = false; this.form.publish() }
+  }
+
   /**
    * Refresh the role library. A failed refresh keeps the last good rows and
    * surfaces the error text.
@@ -267,7 +290,8 @@ class PersonaSwitcherCardController {
 
   /** Begin editing a role; `null` prepares a new-role row. */
   edit(role) {
-    this.editing = role === null ? { ...emptyRole(), id: nextRoleId(this.roles) } : { ...role }
+    stopVoicePreview()
+    this.editing = role === null ? { ...emptyRole(), id: nextRoleId(this.roles) } : { ...emptyRole(), ...role }
     this.editingNew = role === null
     this.tab = 'library'
     this.confirming = null
@@ -276,6 +300,7 @@ class PersonaSwitcherCardController {
 
   /** Drop the editor without writing. */
   cancelEdit() {
+    stopVoicePreview()
     this.editing = null
     this.editingNew = false
     this.form.publish()
@@ -296,6 +321,8 @@ class PersonaSwitcherCardController {
         }
       }
       await api('POST', '/role', this.editing)
+      stopVoicePreview()
+      window.dispatchEvent?.(new Event('persona-switcher:voice-changed'))
       this.editing = null
       this.editingNew = false
       await this.load()
@@ -306,6 +333,23 @@ class PersonaSwitcherCardController {
       this.busy = false
       this.form.publish()
     }
+  }
+
+  async setAvatar(role, file) {
+    this.busy = true
+    this.error = null
+    this.form.publish()
+    try {
+      let payload
+      if (file) {
+        const upload = await readImageUpload(file)
+        if (upload.error) throw new Error(this.t(upload.error))
+        payload = await api('POST', `/avatar?role=${encodeURIComponent(role.id)}`, {image:upload.dataUrl})
+      } else payload = await api('DELETE', `/avatar?role=${encodeURIComponent(role.id)}`)
+      this.roles = this.roles.map(item => item.id === role.id ? {...item, avatar:payload.avatar} : item)
+      window.dispatchEvent?.(new Event('persona-switcher:avatar-changed'))
+    } catch (error) { this.error = error.message }
+    finally { this.busy = false; this.form.publish() }
   }
 
   /** Delete a role through the role library. */
@@ -502,6 +546,58 @@ const initialOf = (role) => {
  */
 const STYLE_ID = 'persona-switcher-settings-style'
 const STYLE_TEXT = `
+.ps-page .ps-role__actions { flex-wrap: wrap; }
+.dsh-panel.ps-page .ps-role__default {
+  flex: none; padding: 0 6px; border-radius: 5px; font-size: 11px; line-height: 18px; font-weight: 500;
+  color: var(--ps-accent); background: color-mix(in srgb, var(--ps-accent) 10%, transparent);
+  border: 1px solid color-mix(in srgb, var(--ps-accent) 25%, transparent);
+}
+.dsh-panel.ps-page .ps-voice-dialog {
+  box-sizing: border-box; width: min(320px, calc(100vw - 32px));
+  max-height: calc(100vh - 32px); overflow: auto;
+  padding: 16px; border: 1px solid var(--ps-border); border-radius: 12px;
+  background: var(--dsw-alias-bg-base, #fff); color: var(--ps-ink); font: inherit;
+  box-shadow: 0 16px 60px #0003;
+}
+.dsh-panel.ps-page .ps-voice-dialog::backdrop { background: #0005; }
+.dsh-panel.ps-page .ps-voice-dialog form { display: grid; gap: 12px; margin: 0; padding: 0; min-width: 0; }
+.dsh-panel.ps-page .ps-voice-dialog h3 {
+  margin: 0; padding: 0; font-size: 14px; line-height: 20px; font-weight: 600; text-align: left;
+}
+.dsh-panel.ps-page .ps-voice-dialog__input {
+  box-sizing: border-box; width: 100%; min-width: 0; height: 34px; margin: 0;
+  padding: 6px 10px; border: 1px solid var(--ps-border); border-radius: 8px;
+  color: var(--ps-ink); background: var(--dsw-specific-input-major, var(--dsw-alias-bg-base, #fff));
+  font: inherit; font-size: 13px; line-height: 20px; outline: none;
+}
+.dsh-panel.ps-page .ps-voice-dialog__input::placeholder { color: var(--ps-ink-3); }
+.dsh-panel.ps-page .ps-voice-dialog__input:focus { border-color: var(--ps-accent); }
+.dsh-panel.ps-page .ps-voice-dialog__actions {
+  display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px;
+  width: 100%; max-width: 228px; margin: 0; padding: 0; min-width: 0;
+}
+.dsh-panel.ps-page .ps-voice-dialog__actions button {
+  box-sizing: border-box; width: 100%; min-width: 0; max-width: 100%; height: 28px;
+  padding: 0 8px; border-radius: 8px; font-size: 12px; line-height: 18px;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+}
+.dsh-panel.ps-page .ps-voice-dialog .ps-error { margin: 0; overflow-wrap: anywhere; }
+.dsh-panel.ps-page .ps-meme-dialog { width: min(480px, calc(100vw - 32px)); }
+.dsh-panel.ps-page .ps-meme-dialog label { display: grid; gap: 6px; font-size: 13px; min-width: 0; }
+.dsh-panel.ps-page .ps-meme-dialog fieldset { min-width: 0; border: 1px solid var(--ps-border); border-radius: 8px; padding: 10px; margin: 0; }
+.dsh-panel.ps-page .ps-meme-dialog legend { font-size: 13px; padding: 0 4px; }
+.dsh-panel.ps-page .ps-meme-options { display: flex; gap: 8px 12px; flex-wrap: wrap; max-height: 132px; overflow: auto; }
+.dsh-panel.ps-page .ps-meme-options label { display: flex; align-items: center; gap: 5px; overflow-wrap: anywhere; }
+.dsh-panel.ps-page .ps-meme-options input { margin: 0; flex-shrink: 0; }
+.dsh-panel.ps-page .ps-meme-dialog select { height: 34px; }
+.dsh-panel.ps-page .ps-meme-dialog textarea { height: 80px; resize: vertical; }
+.dsh-panel.ps-page .ps-meme-dialog .ps-meme-preview { height: 112px; }
+.dsh-panel.ps-page .ps-meme-hint { font-size: 12px; color: var(--ps-ink-3); margin: 0; line-height: 1.5; }
+@container persona-settings (max-width: 640px) {
+  .dsh-panel.ps-page .ps-role { flex-wrap: wrap; }
+  .dsh-panel.ps-page .ps-role__actions { flex: 1 1 100%; max-width: 100%; }
+}
+
 .dsh-panel.ps-page {
   --ps-surface: var(--dsw-alias-bg-layer-1, rgba(128, 128, 128, 0.10));
   --ps-surface-2: var(--dsw-alias-bg-layer-2, rgba(128, 128, 128, 0.16));
@@ -523,6 +619,8 @@ const STYLE_TEXT = `
   flex-direction: column;
   gap: 14px;
   width: 100%;
+  min-width: 0;
+  container: persona-settings / inline-size;
   color: var(--ps-ink);
   font-family: var(--dsw-font-family, inherit);
 }
@@ -1088,13 +1186,17 @@ const STYLE_TEXT = `
 `
 
 /**
- * Install the page stylesheet once. Guarded for the simulation harness (no
- * DOM) and idempotent across bundle re-execution; the rules are static, so
- * there is nothing to uninstall on dispose.
+ * Reuse the stylesheet node, but refresh its contents on a hot update.
+ * The desktop window can outlive this plugin build; retaining an older
+ * stylesheet leaves newly introduced controls with the browser defaults.
  */
 const installStyle = () => {
   if (typeof document === 'undefined' || document.head === null) return
-  if (document.getElementById(STYLE_ID) !== null) return
+  const existing = document.getElementById(STYLE_ID)
+  if (existing !== null) {
+    if (existing.textContent !== STYLE_TEXT) existing.textContent = STYLE_TEXT
+    return
+  }
   const style = document.createElement('style')
   style.id = STYLE_ID
   style.textContent = STYLE_TEXT
@@ -1211,12 +1313,189 @@ const installPersonaNavIcon = (t) => {
   }
 }
 
+/** Detect the Fish API without synthesizing audio or changing its configuration. */
+function usePluginAvailable(bridge) {
+  const [available, setAvailable] = useState(false)
+  useEffect(() => {
+    let cancelled = false, timer, request
+    const refresh = async () => {
+      clearTimeout(timer)
+      request?.abort()
+      const current = request = new AbortController()
+      const next = await bridge.available(current.signal)
+      if (cancelled || current !== request) return
+      setAvailable(next)
+      timer = setTimeout(refresh, 30000)
+    }
+    const visible = () => { if (document.visibilityState !== 'hidden') void refresh() }
+    void refresh()
+    window.addEventListener('focus', visible)
+    document.addEventListener('visibilitychange', visible)
+    return () => {
+      cancelled = true; clearTimeout(timer); request?.abort()
+      window.removeEventListener('focus', visible)
+      document.removeEventListener('visibilitychange', visible)
+    }
+  }, [bridge])
+  return available
+}
+
+function useFishAvailable() { return usePluginAvailable(fishVoice) }
+
+function MemePreferenceDialog({ role, t, onClose, onSaved }) {
+  const dialog = useRef(null)
+  const [preference, setPreference] = useState(() => role.memePreference ?? emptyMemePreference())
+  const [catalogue, setCatalogue] = useState(null)
+  const [tags, setTags] = useState([])
+  const [loading, setLoading] = useState(true)
+  const [busy, setBusy] = useState(false)
+  const [error, setError] = useState('')
+  const [retry, setRetry] = useState(0)
+  const selectedPackIds = JSON.stringify(preference.packs.map(pack => pack.id).sort())
+  useEffect(() => { const node = dialog.current; node.showModal(); return () => node.close() }, [])
+  useEffect(() => {
+    const request = new AbortController()
+    setLoading(true); setError(''); setTags([])
+    const load = async () => {
+      const data = await memeBridge.catalogue(undefined, request.signal)
+      if (request.signal.aborted) return
+      setCatalogue(data)
+      const selected = JSON.parse(selectedPackIds)
+      const ids = (selected.length ? selected : data.packs.map(pack => pack.id))
+        .filter(id => data.packs.some(pack => pack.id === id))
+      const rows = await Promise.all(ids.map(id => id === data.packId ? data : memeBridge.catalogue(id, request.signal)))
+      if (!request.signal.aborted) setTags([...new Set(rows.flatMap(row => row.tags))])
+    }
+    load().catch(cause => { if (!request.signal.aborted) setError(cause.message) })
+      .finally(() => { if (!request.signal.aborted) setLoading(false) })
+    return () => request.abort()
+  }, [selectedPackIds, retry])
+  const togglePack = pack => {
+    if (!preference.packs.some(item => item.id === pack.id) && preference.packs.length >= 50) { setError(t('memeLimit')); return }
+    setPreference(current => ({ ...current, packs: current.packs.some(item => item.id === pack.id)
+      ? current.packs.filter(item => item.id !== pack.id) : [...current.packs, { id: pack.id, name: pack.name }] }))
+  }
+  const toggleTag = tag => {
+    if (!preference.tags.includes(tag) && preference.tags.length >= 100) { setError(t('memeLimit')); return }
+    setPreference(current => ({ ...current, tags: current.tags.includes(tag)
+      ? current.tags.filter(item => item !== tag) : [...current.tags, tag] }))
+  }
+  const close = () => { dialog.current.close(); onClose() }
+  const save = async event => {
+    event.preventDefault()
+    if (busy) return
+    setBusy(true); setError('')
+    try {
+      const { role: latest } = await api('GET', `/role?id=${encodeURIComponent(role.id)}`)
+      if (!latest) throw new Error(t('composerLibraryUnavailable'))
+      await api('POST', '/role', { ...latest, memePreference: preference })
+      await onSaved(); close()
+    } catch (cause) { setError(cause.message) }
+    finally { setBusy(false) }
+  }
+  // Keep removed libraries and tags visible so old bindings can be cleared.
+  const packs = [...(catalogue?.packs ?? []), ...preference.packs.filter(pack => !catalogue?.packs.some(item => item.id === pack.id))]
+  const visibleTags = [...new Set([...tags, ...preference.tags])]
+  return <dialog ref={dialog} className="ps-voice-dialog ps-meme-dialog" aria-labelledby="ps-meme-title"
+    onCancel={event => { event.preventDefault(); if (!busy) close() }}>
+    <form onSubmit={save}>
+      <h3 id="ps-meme-title">{t('memeBind')} · {role.name || role.id}</h3>
+      <fieldset disabled={busy}><legend>{t('memePacks')}</legend>
+        <div className="ps-meme-options">{packs.map(pack => <label key={pack.id}>
+          <input type="checkbox" checked={preference.packs.some(item => item.id === pack.id)} onChange={() => togglePack(pack)} />
+          {pack.name}{catalogue && !catalogue.packs.some(item => item.id === pack.id) ? ` (${t('memeMissing')})` : ''}
+        </label>)}</div>
+        {catalogue && !packs.length && <p className="ps-meme-hint">{t('memePacksEmpty')}</p>}
+      </fieldset>
+      <fieldset disabled={busy}><legend>{t('memeTags')}</legend>
+        <div className="ps-meme-options">{visibleTags.map(tag => <label key={tag}>
+          <input type="checkbox" checked={preference.tags.includes(tag)} onChange={() => toggleTag(tag)} />{tag}
+        </label>)}</div>
+        {!loading && !visibleTags.length && <p className="ps-meme-hint">{t('memeTagsEmpty')}</p>}
+      </fieldset>
+      {loading && <p className="ps-meme-hint" role="status">{t('memeLoading')}</p>}
+      <label>{t('memeFrequency')}<select className="ps-voice-dialog__input" value={preference.frequency ?? 'default'} disabled={busy}
+        onChange={event => setPreference(current => ({ ...current, frequency: event.target.value }))}>
+        {MEME_FREQUENCIES.map(value => <option key={value} value={value}>{t(`memeFrequency_${value}`)}</option>)}
+      </select></label>
+      <label>{t('memePrompt')}<textarea className="ps-voice-dialog__input" value={preference.prompt} maxLength={4000} disabled={busy}
+        placeholder={t('memePromptPlaceholder')} onChange={event => setPreference(current => ({ ...current, prompt: event.target.value }))} /></label>
+      <label>{t('memePreview')}<textarea className="ps-voice-dialog__input ps-meme-preview" readOnly value={memePreferencePrompt(preference)} /></label>
+      {error && <p className="ps-error" role="alert">{error}<Button type="button" size="sm" disabled={busy || loading} onClick={() => setRetry(value => value + 1)}>{t('memeReload')}</Button></p>}
+      <div className="ps-voice-dialog__actions">
+        <Button type="submit" size="sm" variant="outline" disabled={busy}>{t('save')}</Button>
+        <Button type="button" size="sm" disabled={busy} onClick={() => setPreference(emptyMemePreference())}>{t('memeClear')}</Button>
+        <Button type="button" size="sm" disabled={busy} onClick={close}>{t('cancel')}</Button>
+      </div>
+    </form>
+  </dialog>
+}
+
+function VoiceBindingDialog({ role, t, onClose, onSaved }) {
+  const dialog = useRef(null)
+  const [voiceId, setVoiceId] = useState(role.voiceId ?? '')
+  const [busy, setBusy] = useState(false)
+  const [previewBusy, setPreviewBusy] = useState(false)
+  const [error, setError] = useState('')
+  useEffect(() => {
+    const node = dialog.current
+    node.showModal()
+    return () => { node.close(); stopVoicePreview() }
+  }, [])
+  const close = () => { stopVoicePreview(); dialog.current.close(); onClose() }
+  const preview = async () => {
+    if (busy || previewBusy || !voiceId.trim()) return
+    setPreviewBusy(true); setError('')
+    try { await playVoicePreview(voiceId, role.voicePreviewText) }
+    catch (cause) { setError(cause.message) }
+    finally { setPreviewBusy(false) }
+  }
+  const save = async event => {
+    event.preventDefault()
+    if (busy || previewBusy) return
+    if (voiceId.length > 256 || /[\u0000-\u001f\u007f]/.test(voiceId)) { setError(t('voiceIdInvalid')); return }
+    setBusy(true); setError('')
+    try {
+      // Read the latest role so changing only its voice preserves text edited elsewhere.
+      const { role: latest } = await api('GET', '/role?id=' + encodeURIComponent(role.id))
+      if (!latest || latest.id !== role.id) throw new Error(t('composerLibraryUnavailable'))
+      await api('POST', '/role', { ...latest, voiceId: voiceId.trim() })
+      await onSaved()
+      window.dispatchEvent(new Event('persona-switcher:voice-changed'))
+      close()
+    } catch (cause) { setError(cause.message) }
+    finally { setBusy(false) }
+  }
+  return <dialog ref={dialog} className="ps-voice-dialog" aria-labelledby="ps-voice-title"
+    onCancel={event => { event.preventDefault(); if (!busy) close() }}>
+    <form onSubmit={save}>
+      <h3 id="ps-voice-title" title={role.name || role.id}>{t('voiceBind')}</h3>
+      {error && <p className="ps-error" role="alert">{error}</p>}
+      <input className="ps-voice-dialog__input" aria-label={t('fieldVoiceId')} value={voiceId} maxLength={256}
+        disabled={busy || previewBusy} placeholder={t('fieldVoiceId')} autoFocus onChange={event => setVoiceId(event.target.value)} />
+      <div className="ps-voice-dialog__actions">
+        <Button type="button" size="sm" disabled={busy} onClick={close}>{t('cancel')}</Button>
+        <Button type="button" size="sm" disabled={busy || previewBusy || !voiceId.trim()} onClick={preview}>
+          {previewBusy ? t('voicePreviewBusy') : t('voicePreview')}
+        </Button>
+        <Button type="submit" size="sm" variant="primary" disabled={busy || previewBusy}>{busy ? t('saving') : t('save')}</Button>
+      </div>
+    </form>
+  </dialog>
+}
+
 /**
- * The settings page section: a header, a two-tab switch, and either the
- * general preferences or the role library with its editor.
+ * The settings page shows the role library or its editor.
  * @param props - the slot-delivered injected dependencies.
  * @returns the section element.
  */
+const PersonaAddAction = ({ controller, t, useSnapshot }) => {
+  const { sectionVisible, busy, editing, roles } = useSnapshot((value) => value)
+  if (!sectionVisible || roles.length === 0) return null
+  return <Button variant="primary" size="sm" disabled={busy || editing !== null}
+    onClick={() => controller.edit(null)}>{t('add')}</Button>
+}
+
 const PersonaSwitcherSection = (props) => {
   const { controller, t, useSnapshot } = props
   if (controller === undefined || useSnapshot === undefined || t === undefined) return null
@@ -1226,62 +1505,26 @@ const PersonaSwitcherSection = (props) => {
     editing,
     busy,
     error,
-    exposeTool,
-    tab,
     confirming,
     status,
     editingNew,
-    mascotShown,
-    mascotSize,
-    mascotMotion
+    defaultRoleId,
+    writable
   } = state
 
-  // These controls are client-side values another window (or another tab of
-  // this page) can change behind this page's back, so they are re-read on the
-  // events rather than trusted from the snapshot alone.
+  const voiceAvailable = useFishAvailable()
+  const [voiceRole, setVoiceRole] = useState(null)
+  const memeAvailable = usePluginAvailable(memeBridge)
+  const [memeRole, setMemeRole] = useState(null)
   useEffect(() => {
-    const onStored = (event) => {
-      // `undefined` means this plugin's own CustomEvent, which carries no `key`;
-      // only a real StorageEvent names one. Without that case the broadcast
-      // listeners below never ran, and a switch flipped in this window left the
-      // stored value and the displayed toggle disagreeing.
-      if (
-        event.key !== undefined &&
-        event.key !== null &&
-        event.key !== SHOWN_KEY &&
-        event.key !== SIZE_KEY &&
-        event.key !== MOTION_KEY
-      ) {
-        return
-      }
-      controller.syncMascotState()
-    }
-    window.addEventListener('storage', onStored)
-    window.addEventListener(SHOWN_EVENT, onStored)
-    window.addEventListener(SIZE_EVENT, onStored)
-    window.addEventListener(MOTION_EVENT, onStored)
+    controller.sectionVisible = true
+    controller.form.publish()
     return () => {
-      window.removeEventListener('storage', onStored)
-      window.removeEventListener(SHOWN_EVENT, onStored)
-      window.removeEventListener(SIZE_EVENT, onStored)
-      window.removeEventListener(MOTION_EVENT, onStored)
+      controller.sectionVisible = false
+      controller.form.publish()
     }
   }, [controller])
-
   const onEditField = (field) => (event) => controller.patchEditing(field, event.target.value)
-
-  const tabs = [
-    { value: 'general', id: 'ps-tab-general', panel: 'ps-panel-general', label: t('tabGeneral') },
-    { value: 'library', id: 'ps-tab-library', panel: 'ps-panel-library', label: t('tabLibrary') }
-  ]
-
-  const onTabKeyDown = (event) => {
-    if (event.key !== 'ArrowLeft' && event.key !== 'ArrowRight') return
-    event.preventDefault()
-    const next = tab === 'general' ? 'library' : 'general'
-    controller.setTab(next)
-    document.getElementById(next === 'general' ? 'ps-tab-general' : 'ps-tab-library')?.focus()
-  }
 
   const idText = editing === null ? '' : editing.id
   const idInvalid = editingNew && !ID_PATTERN.test(idText)
@@ -1292,18 +1535,9 @@ const PersonaSwitcherSection = (props) => {
   const nameInvalid = editing === null || String(editing.name ?? '').trim() === ''
 
   const roleLibrary = (
-    <section className="ps-card">
-      <div className="ps-card__head">
-        <div>
-          <h3>{t('library')}</h3>
-          <p>{t('libraryHint')}</p>
-        </div>
-        <Button variant="primary" size="sm" disabled={busy} onClick={() => controller.edit(null)}>
-          {t('add')}
-        </Button>
-      </div>
+    <section className="ps-card" aria-label={t('library')}>
       <div className="ps-card__body ps-card__body--flush">
-        {error !== null && (
+        {error && (
           <p className="ps-error" role="alert">
             <span aria-hidden="true">⚠</span>
             <span>{error}</span>
@@ -1329,35 +1563,16 @@ const PersonaSwitcherSection = (props) => {
         )}
         {roles.map((role) => (
           <div className="ps-role" key={role.id}>
-            <input
-              ref={(node) => {
-                if (node === null) artworkInputs.delete(role.id)
-                else artworkInputs.set(role.id, node)
-              }}
-              type="file"
-              accept={ARTWORK_ACCEPT}
-              className="ps-sr"
-              aria-label={t('mascotImport')}
-              onChange={(event) => {
-                const file = event.target.files?.[0]
-                // Clear the picker first: picking the SAME file twice must fire
-                // another change event, and it would not from a filled input.
-                event.target.value = ''
-                if (file !== undefined) void controller.importArtwork(role, file)
-              }}
-            />
-            {role.mascot?.image ? (
-              <img className="ps-role__thumb" src={role.mascot.image} alt="" decoding="async" />
-            ) : (
-              <span className="ps-role__avatar" aria-hidden="true">
-                {initialOf(role)}
-              </span>
-            )}
+            <input type="file" accept={ARTWORK_ACCEPT} className="ps-sr" aria-label={t('avatarUpload')}
+              ref={node => { if (node) avatarInputs.set(role.id,node); else avatarInputs.delete(role.id) }}
+              onChange={event => { const file = event.target.files?.[0]; event.target.value = ''; if (file) void controller.setAvatar(role,file) }} />
+            {role.avatar && <img className="ps-role__thumb" src={role.avatar} alt="" decoding="async"
+              style={{objectFit:'cover',aspectRatio:'1',borderRadius:10}} />}
             <div className="ps-role__text">
               <div className="ps-role__name">
-                <span>{role.name}</span>
+                <span>{role.name || role.id}</span>
                 <code className="ps-role__id">{role.id}</code>
-                {role.mascot?.image ? <span className="ps-role__tag">{t('mascotTag')}</span> : null}
+                {defaultRoleId === role.id && <span className="ps-role__default">{t('defaultBadge')}</span>}
               </div>
               {role.description ? <div className="ps-role__desc">{role.description}</div> : null}
             </div>
@@ -1379,29 +1594,24 @@ const PersonaSwitcherSection = (props) => {
               </div>
             ) : (
               <div className="ps-role__actions">
-                <Button
-                  size="sm"
-                  variant="outline"
-                  disabled={busy}
-                  onClick={() => artworkInputs.get(role.id)?.click()}
-                >
-                  {role.mascot?.image ? t('mascotReplace') : t('mascotImport')}
-                </Button>
-                {role.mascot?.image ? (
-                  <Button
-                    size="sm"
-                    variant="outline"
-                    disabled={busy}
-                    onClick={() => void controller.clearArtwork(role)}
-                  >
-                    {t('mascotClear')}
+                {memeAvailable && <Button size="sm" variant="outline" disabled={busy} onClick={() => setMemeRole(role)}>
+                  {t('memeBind')}
+                </Button>}
+                {voiceAvailable && <>
+                  <Button size="sm" variant="outline" disabled={busy} onClick={() => { stopVoicePreview(); setVoiceRole(role) }}>
+                    {t('voiceBind')}
                   </Button>
-                ) : null}
-                <Button size="sm" disabled={busy} onClick={() => controller.edit(role)}>
+                </>}
+                <Button size="sm" variant="outline" disabled={busy} onClick={() => avatarInputs.get(role.id)?.click()}>
+                  {role.avatar ? t('avatarReplace') : t('avatarSet')}
+                </Button>
+                {role.avatar && <Button size="sm" disabled={busy} onClick={() => controller.setAvatar(role,null)}>{t('avatarClear')}</Button>}
+                <Button size="sm" variant="outline" disabled={busy} onClick={() => controller.edit(role)}>
                   {t('edit')}
                 </Button>
                 <Button
                   size="sm"
+                  variant="outline"
                   className="ps-danger-btn"
                   disabled={busy}
                   onClick={() => controller.setConfirming(role.id)}
@@ -1424,8 +1634,7 @@ const PersonaSwitcherSection = (props) => {
               </svg>
             </span>
             <p className="ps-empty__title">{t('rolesEmpty')}</p>
-            <p className="ps-empty__hint">{t('rolesEmptyHint')}</p>
-            <Button variant="primary" size="sm" disabled={busy} onClick={() => controller.edit(null)}>
+            <Button variant="primary" size="sm" disabled={busy} style={{marginTop:4}} onClick={() => controller.edit(null)}>
               {t('add')}
             </Button>
           </div>
@@ -1440,8 +1649,11 @@ const PersonaSwitcherSection = (props) => {
         <div className="ps-card__head">
           <div>
             <h3>{editingNew ? t('addTitle') : t('editTitle')}</h3>
-            <p>{t('editorHint')}</p>
           </div>
+          {!editingNew && <Button size="sm" variant="outline" disabled={busy || !writable}
+            aria-pressed={defaultRoleId === editing.id} onClick={() => controller.toggleDefault(editing)}>
+            {defaultRoleId === editing.id ? t('cancelDefault') : t('setAsDefault')}
+          </Button>}
         </div>
         <div className="ps-card__body">
           {error !== null && (
@@ -1490,7 +1702,6 @@ const PersonaSwitcherSection = (props) => {
                 disabled={busy}
                 onChange={onEditField('persona')}
               />
-              <span className="ps-field__hint">{t('fieldPersonaHint')}</span>
             </label>
           </div>
         </div>
@@ -1519,185 +1730,21 @@ const PersonaSwitcherSection = (props) => {
               {roles.length}
             </span>
           </div>
-          <p className="ps-head__sub">{t('subtitle')}</p>
         </div>
-        <p className="ps-head__meta">{t('pageMeta')}</p>
       </header>
-
-      <div className="ps-tabs" role="tablist" aria-label={t('nav')}>
-        <span
-          className={tab === 'library' ? 'ps-tabs__pill is-second' : 'ps-tabs__pill'}
-          aria-hidden="true"
-        />
-        {tabs.map((item) => (
-          <button
-            key={item.value}
-            type="button"
-            className="ps-tab"
-            role="tab"
-            id={item.id}
-            aria-selected={tab === item.value}
-            aria-controls={item.panel}
-            tabIndex={tab === item.value ? 0 : -1}
-            onClick={() => controller.setTab(item.value)}
-            onKeyDown={onTabKeyDown}
-          >
-            {item.label}
-          </button>
-        ))}
+      <div className="ps-panel" id="ps-panel-library">
+        {editor ?? roleLibrary}
       </div>
-
-      {tab === 'general' ? (
-        <div className="ps-panel" role="tabpanel" id="ps-panel-general" aria-labelledby="ps-tab-general">
-          <section className="ps-card">
-            <div className="ps-card__head">
-              <div>
-                <h3>{t('defaultRole')}</h3>
-                <p>{t('defaultRoleHint')}</p>
-              </div>
-            </div>
-            <div className="ps-card__body">
-              <div className="ps-form">
-                <SettingsForm
-                  labels={formLabels(t)}
-                  state={state}
-                  onSave={props.save}
-                  onDiscard={props.discard}
-                >
-                  <SettingsValueField
-                    id="persona-switcher-default-role"
-                    label={t('fieldDefaultRole')}
-                    placeholder="whale-girl"
-                    overriddenLabel={t('overridden')}
-                    resetLabel={t('reset')}
-                    invalidLabel={t('invalidRole')}
-                    disabled={!state.writable}
-                    {...state.defaultRole}
-                    onEdit={(text) => props.edit('defaultRole', text)}
-                    onReset={() => props.resetField('defaultRole')}
-                  />
-                </SettingsForm>
-              </div>
-            </div>
-          </section>
-
-          <section className="ps-card">
-            <div className="ps-card__head">
-              <div>
-                <h3>{t('toolCard')}</h3>
-                <p>{t('exposeToolHint')}</p>
-              </div>
-            </div>
-            <div className="ps-card__body">
-              <div className="ps-row">
-                <div className="ps-row__text">
-                  <span className="ps-row__label">{t('exposeTool')}</span>
-                </div>
-                <Switch
-                  checked={exposeTool}
-                  label={t('exposeTool')}
-                  disabled={!state.writable || busy}
-                  onChange={(value) => controller.setExposeTool(value)}
-                />
-              </div>
-            </div>
-          </section>
-          <section className="ps-card">
-            <div className="ps-card__head">
-              <div>
-                <h3>{t('mascotCard')}</h3>
-                <p>{t('mascotCardHint')}</p>
-              </div>
-            </div>
-            <div className="ps-card__body">
-              <div className="ps-row">
-                <div className="ps-row__text">
-                  <span className="ps-row__label">{t('mascotShown')}</span>
-                  <span className="ps-row__hint">{t('mascotShownHint')}</span>
-                </div>
-                <Switch
-                  checked={mascotShown}
-                  label={t('mascotShown')}
-                  onChange={(value) => controller.setMascotShown(value)}
-                />
-              </div>
-              <div className="ps-row">
-                <div className="ps-row__text">
-                  <label className="ps-row__label" htmlFor="ps-mascot-size">
-                    {t('mascotSize')}
-                  </label>
-                  <span className="ps-row__hint">{t('mascotSizeHint')}</span>
-                </div>
-                <div className="ps-slider">
-                  <input
-                    id="ps-mascot-size"
-                    type="range"
-                    min={SIZE_MIN}
-                    max={SIZE_MAX}
-                    step="0.05"
-                    value={mascotSize}
-                    aria-valuetext={`${mascotSize}×`}
-                    disabled={!mascotShown}
-                    onChange={(event) => controller.setMascotSize(clampSize(event.target.value))}
-                  />
-                  <output className="ps-slider__value" htmlFor="ps-mascot-size">
-                    {mascotSize}×
-                  </output>
-                </div>
-              </div>
-              <div className="ps-row">
-                <div className="ps-row__text">
-                  <span className="ps-row__label">{t('mascotMotion')}</span>
-                  <span className="ps-row__hint">{t('mascotMotionHint')}</span>
-                </div>
-                <div className="ps-seg" role="group" aria-label={t('mascotMotion')}>
-                  <span
-                    className="ps-seg__pill"
-                    style={{ transform: `translateX(${MOTION_VALUES.indexOf(mascotMotion) * 100}%)` }}
-                    aria-hidden="true"
-                  />
-                  {MOTION_VALUES.map((value) => (
-                    <button
-                      key={value}
-                      type="button"
-                      className="ps-seg__btn"
-                      aria-pressed={mascotMotion === value}
-                      onClick={() => controller.setMascotMotion(value)}
-                    >
-                      {t(`mascotMotion${value[0].toUpperCase()}${value.slice(1)}`)}
-                    </button>
-                  ))}
-                </div>
-              </div>
-              <div className="ps-row">
-                <div className="ps-row__text">
-                  <span className="ps-row__label">{t('mascotPosition')}</span>
-                  <span className="ps-row__hint">{t('mascotPositionHint')}</span>
-                </div>
-                <Button
-                  size="sm"
-                  variant="outline"
-                  disabled={!mascotShown}
-                  onClick={() => controller.resetMascotPos()}
-                >
-                  {t('mascotResetPos')}
-                </Button>
-              </div>
-              <p className="ps-note">{t('mascotWhere')}</p>
-            </div>
-          </section>
-        </div>
-      ) : (
-        <div className="ps-panel" role="tabpanel" id="ps-panel-library" aria-labelledby="ps-tab-library">
-          {editor ?? roleLibrary}
-        </div>
-      )}
+      {voiceAvailable && voiceRole && <VoiceBindingDialog key={voiceRole.id} role={voiceRole} t={t}
+        onClose={() => setVoiceRole(null)} onSaved={() => controller.load()} />}
+      {memeRole && <MemePreferenceDialog key={memeRole.id} role={memeRole} t={t}
+        onClose={() => setMemeRole(null)} onSaved={() => controller.load()} />}
     </div>
   )
 }
 
 /**
- * Mount the persona switcher's settings page and the on-screen mascot while
+ * Mount the persona switcher's role library while
  * the Host serves its namespace.
  * @param ctx - the browser plugin context.
  */
@@ -1708,11 +1755,10 @@ export function apply(ctx) {
   installRolePicker(ctx, { api, t })
   installStyle()
   ctx.effect(() => installPersonaNavIcon(t) || undefined, 'persona-switcher: nav icon')
-  // The mascot rides in this same bundle: the loader allows exactly one factory
-  // per package (a second entry point is fatal), so it is imported and installed
-  // here rather than built as its own bundle.
-  ctx.effect(() => installMascot(ctx, t), 'persona-switcher: mascot')
-  const card = new PersonaSwitcherCardController(ctx.configForms.get(CONFIG_KEY), t)
+  // Mascot display is paused; artwork storage and APIs remain available.
+  const card = new PersonaSwitcherCardController(ctx.configForms.get(CONFIG_KEY), t, ctx)
+  ctx.effect(() => stopVoicePreview, 'persona-switcher: voice preview cleanup')
+  ctx.inject(['sessions'], scope => { card.sessions = scope.get('sessions') })
   installComposerPicker(ctx, { api, t, card })
   ctx.effect(
     () => () => {
@@ -1732,9 +1778,56 @@ export function apply(ctx) {
       PersonaSwitcherSection
     )
   )
+  ctx.slots.inject('settings.action', () => ctx.slots.register({
+    name: 'settings.action',
+    id: 'persona-switcher-add',
+    order: -10,
+    inject: () => card.inject()
+  }, PersonaAddAction))
 }
 
 const zh = {
+  memeBind: '表情偏好',
+  memeReload: '重新读取',
+  memeLimit: '最多选择 50 个图库和 100 个标签。',
+  memePacks: '优先图库',
+  memeTags: '偏好标签',
+  memeFrequency: '发表情频率',
+  memeFrequency_default: '跟随 dsh-meme',
+  memeFrequency_low: '低频',
+  memeFrequency_medium: '适中',
+  memeFrequency_high: '高频',
+  memeFrequency_off: '不主动发',
+  memePrompt: '补充提示词',
+  memePromptPlaceholder: '例如：偏爱猫猫和可爱反应图，少用夸张鬼畜表情。',
+  memePreview: '生效提示词预览',
+  memeClear: '清空偏好',
+  memeMissing: '已不可用',
+  memePacksEmpty: '暂无图库，可先在 dsh-meme 中添加。',
+  memeTagsEmpty: '暂无可选标签。',
+  memeLoading: '正在读取图库和标签…',
+  setAsDefault: '设为默认',
+  cancelDefault: '取消默认',
+  defaultBadge: '默认',
+  defaultSaveFailed: '默认角色保存失败，请重试。',
+  voiceBind: '绑定音色',
+  voiceBindFirst: '请先绑定音色',
+  voiceBindingHint: '留空可解除绑定。',
+  voiceIdInvalid: '音色 ID 最多 256 字，不能包含换行或控制字符。',
+  selectRole: '选择',
+  unselectRole: '取消选择',
+  openConversation: '请先打开一个对话',
+  avatarUpload: '上传头像',
+  avatarSet: '设置头像',
+  avatarReplace: '更换头像',
+  avatarClear: '清除头像',
+  avatarTag: '默认头像',
+  fieldVoiceId: '音色 ID',
+  fieldVoiceHint: '留空保留当前音色。',
+  fieldVoicePreview: '试听语句',
+  voicePreview: '试听',
+  voicePreviewBusy: '生成试听中…',
+  voicePreviewHint: '试听会调用 Fish 服务。',
   composerPersona: '人设',
   composerAdd: '添加人设',
   composerRetry: '重试',
@@ -1809,12 +1902,53 @@ const zh = {
   rolePickSearch: '搜索角色…',
   rolePickEmpty: '角色库里还没有角色，先到设置页新增一个。',
   rolePickNoMatch: '没有匹配的角色。',
-  rolePickNone: 'none · 使用部署人设',
-  rolePickNoneHint: '不绑定角色',
+  rolePickNone: '不使用角色',
+  rolePickNoneHint: '',
   rolePickCurrent: '当前'
 }
 
 const en = {
+  memeBind: 'Meme preferences',
+  memeReload: 'Reload',
+  memeLimit: 'Select up to 50 libraries and 100 tags.',
+  memePacks: 'Preferred libraries',
+  memeTags: 'Preferred tags',
+  memeFrequency: 'Meme frequency',
+  memeFrequency_default: 'Follow dsh-meme',
+  memeFrequency_low: 'Low',
+  memeFrequency_medium: 'Moderate',
+  memeFrequency_high: 'High',
+  memeFrequency_off: 'Only when asked',
+  memePrompt: 'Additional guidance',
+  memePromptPlaceholder: 'For example: prefer cute cat reactions; avoid exaggerated memes.',
+  memePreview: 'Effective guidance preview',
+  memeClear: 'Clear',
+  memeMissing: 'Unavailable',
+  memePacksEmpty: 'No libraries yet. Add one in dsh-meme.',
+  memeTagsEmpty: 'No tags available.',
+  memeLoading: 'Loading libraries and tags…',
+  setAsDefault: 'Set as default',
+  cancelDefault: 'Clear default',
+  defaultBadge: 'Default',
+  defaultSaveFailed: 'Could not save the default role. Please retry.',
+  voiceBind: 'Bind voice',
+  voiceBindFirst: 'Bind a voice first',
+  voiceBindingHint: 'Leave blank to remove the binding.',
+  voiceIdInvalid: 'Voice ID must be at most 256 characters and contain no control characters.',
+  selectRole: 'Select',
+  unselectRole: 'Deselect',
+  openConversation: 'Open a conversation first',
+  avatarUpload: 'Upload avatar',
+  avatarSet: 'Set avatar',
+  avatarReplace: 'Change avatar',
+  avatarClear: 'Clear avatar',
+  avatarTag: 'Default avatar',
+  fieldVoiceId: 'Voice ID',
+  fieldVoiceHint: 'Enter a Fish voice ID. Selecting this persona or conversation updates the shared Fish default. Leave blank to keep the current voice.',
+  fieldVoicePreview: 'Preview sentence',
+  voicePreview: 'Preview',
+  voicePreviewBusy: 'Generating preview…',
+  voicePreviewHint: 'No need to save first. Leave blank for the sample sentence. Calls Fish and restores the previous voice after generation.',
   composerPersona: 'Persona',
   composerAdd: 'Add persona',
   composerRetry: 'Retry',
@@ -1891,7 +2025,7 @@ const en = {
   rolePickSearch: 'Search roles…',
   rolePickEmpty: 'The role library is empty — add a role on the settings page first.',
   rolePickNoMatch: 'No role matches.',
-  rolePickNone: 'none · deployment persona',
-  rolePickNoneHint: 'No role bound',
+  rolePickNone: 'No role',
+  rolePickNoneHint: '',
   rolePickCurrent: 'current'
 }

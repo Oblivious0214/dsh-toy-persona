@@ -1,6 +1,6 @@
 {
-  "name": "dsh-toy-persona",
-  "version": "0.3.2",
+  "name": "dsh-persona-switcher",
+  "version": "0.3.1-toy.13",
   "description": "Switch the model's persona and speaking style mid-session without touching its tools or skills, and give a role an on-screen mascot. 角色切换：只切换模型的人设与语言风格，不动工具与技能，可为角色绑定屏幕吉祥物立绘。",
   "keywords": [
     "deepseek-harness",
@@ -43,7 +43,10 @@
   },
   "files": [
     "lib/index.js",
+    "lib/avatar-store.js",
     "lib/persona-binding.js",
+    "lib/meme-preference.js",
+    "lib/meme-compat.js",
     "lib/session-state.js",
     "lib/client.js",
     "locale",
@@ -52,6 +55,12 @@
     "cordis.patch.yml",
     "README.md",
     "CHANGELOG.md",
+    "RELEASE.md",
+    "RELEASING.md",
+    "assets/persona-picker.png",
+    "docs/composer-compatibility.md",
+    "docs/README.previous.md",
+    "docs/media-integration.md",
     "LICENSE"
   ],
   "scripts": {
@@ -59,9 +68,9 @@
     "build:client": "node scripts/build-client.mjs",
     "install:desktop": "node scripts/install-desktop.mjs",
     "verify": "node scripts/verify-bundle.mjs",
-    "test": "node scripts/simulate-client.mjs && node scripts/verify-host-binding.mjs && node scripts/verify-session-state.mjs && node scripts/verify-created-bind.mjs && node scripts/verify-role-notice.mjs && node scripts/verify-mascot.mjs && node scripts/verify-mascot-client.mjs",
+    "test": "node scripts/simulate-client.mjs && node scripts/verify-host-binding.mjs && node scripts/verify-session-state.mjs && node scripts/verify-created-bind.mjs && node scripts/verify-role-notice.mjs && node scripts/verify-mascot.mjs && node scripts/verify-mascot-client.mjs && node scripts/verify-fish-voice.mjs && node scripts/verify-meme-preference.mjs && node scripts/verify-meme-compat.mjs",
     "test:browser": "node scripts/verify-composer-browser.mjs",
-    "prepublishOnly": "node scripts/build-client.mjs && node scripts/verify-bundle.mjs && node scripts/verify-host-binding.mjs && node scripts/verify-session-state.mjs && node scripts/verify-created-bind.mjs && node scripts/verify-role-notice.mjs && node scripts/verify-mascot.mjs && node scripts/verify-mascot-client.mjs"
+    "prepublishOnly": "node scripts/build-client.mjs && node scripts/verify-bundle.mjs && node scripts/verify-host-binding.mjs && node scripts/verify-session-state.mjs && node scripts/verify-created-bind.mjs && node scripts/verify-role-notice.mjs && node scripts/verify-mascot.mjs && node scripts/verify-mascot-client.mjs && node scripts/verify-meme-preference.mjs && node scripts/verify-meme-compat.mjs"
   },
   "dsh": {
     "bundle": {

@@ -1,4 +1,4 @@
-# dsh-toy-persona bundle patch: one host-plane row.
+# dsh-persona-switcher bundle patch: one host-plane row.
 #
 # The row is host-plane on purpose: it must see every agent and be able to reach
 # each agent's own prompt registry. A row mounted INSIDE a preset realm cannot do
@@ -11,7 +11,7 @@
 # deployment's tools, skills, model route and plugin composition are untouched.
 - insert:
     - id: persona-switcher
-      name: 'dsh-toy-persona'
+      name: 'dsh-persona-switcher'
       config:
         # Empty means "unset": the row then uses <DSH_HOME>/roles. Writing the
         # environment variable this way keeps `undefined` (no variable) and `''`

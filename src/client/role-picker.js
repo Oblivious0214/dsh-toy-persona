@@ -19,6 +19,8 @@
  *     transcript's command node instead of being re-implemented in the browser.
  */
 
+import { fishVoice } from './fish-voice.js'
+
 /** The reserved id that means "stop using a role". */
 const NONE_ID = 'none'
 
@@ -59,13 +61,17 @@ const loadLiveRole = async (sessionId, api, strict = false) => {
   }
 }
 
-/** Read the authoritative label without letting a transient failure mean "none". */
-export const loadRoleLabel = async (sessionId, api) => {
+export const loadSessionRole = async (sessionId, api) => {
   const id = await loadLiveRole(sessionId, api, true)
   if (id === null) return null
   const payload = await api('GET', `/role?id=${encodeURIComponent(id)}`)
-  const name = payload?.role?.name
-  return typeof name === 'string' && name.trim() !== '' ? name : id
+  return { ...payload?.role, id }
+}
+
+/** Read the authoritative label without letting a transient failure mean "none". */
+export const loadRoleLabel = async (sessionId, api) => {
+  const role = await loadSessionRole(sessionId, api)
+  return role === null ? null : role.name?.trim() || role.id
 }
 
 /**
@@ -104,7 +110,7 @@ export const loadOptions = async (session, { api, t }) => {
  * @param session - the popup's session.
  * @param deps - `{ sessions }`.
  */
-export const selectRole = async (option, session, { sessions }) => {
+export const selectRole = async (option, session, { sessions, api }) => {
   const sessionId = session?.sessionId
   const face = sessions?.binding?.(sessionId)?.session ?? session
   if (typeof face?.command !== 'function') {
@@ -122,6 +128,14 @@ export const selectRole = async (option, session, { sessions }) => {
   if (result?.value?.matched === false) {
     const reason = typeof result.value.text === 'string' ? result.value.text : 'the command was not matched'
     throw new Error(`${reason}: /role ${option.id}`)
+  }
+  if (api) {
+    try {
+      const role = await loadSessionRole(sessionId, api)
+      await fishVoice.sync(role?.voiceId)
+    } catch (error) {
+      throw new Error(`人格已切换，音色同步失败：${error.message}`)
+    }
   }
 }
 
@@ -147,7 +161,7 @@ export const createRolePickerSpec = ({ api, t, sessions }) => ({
       noResults: t('rolePickNoMatch')
     }),
     options: (session) => loadOptions(session, { api, t }),
-    onSelect: (option, session) => selectRole(option, session, { sessions })
+    onSelect: (option, session) => selectRole(option, session, { sessions, api })
   }
 })
 

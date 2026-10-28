@@ -35,6 +35,13 @@ if (!existsSync(join(profileDir, 'package.json'))) {
   process.exit(1)
 }
 
+const existingProfile = JSON.parse(readFileSync(join(profileDir, 'package.json'), 'utf8'))
+if (existingProfile.dependencies?.['dsh-toy-persona']) {
+  console.error('install-desktop: migrate the legacy dsh-toy-persona package first to avoid loading two persona plugins')
+  console.error('Use work/plugin-naming-20261028/migrate-desktop.mjs from the ServeUDSH workspace (preflight by default; --apply to install).')
+  process.exit(1)
+}
+
 /** Locate the runtime pnpm that ships with DSH. */
 const pnpmEntry = join(
   home,
@@ -68,7 +75,7 @@ if (result.status !== 0) {
   process.exit(result.status ?? 1)
 }
 
-const installedRoot = join(profileDir, 'node_modules', 'dsh-toy-persona')
+const installedRoot = join(profileDir, 'node_modules', 'dsh-persona-switcher')
 
 /**
  * Copy this build over the installed one, file by file.
@@ -125,10 +132,10 @@ console.log(`install-desktop: installed ${version}; this build is ${built}`)
 // the version, for a directory dependency. Keep it honest.
 const profileManifestPath = join(profileDir, 'package.json')
 const profileManifest = JSON.parse(readFileSync(profileManifestPath, 'utf8'))
-const declared = profileManifest.dependencies?.['dsh-toy-persona']
+const declared = profileManifest.dependencies?.['dsh-persona-switcher']
 if (declared !== undefined && declared.startsWith('file:')) {
-  if (profileManifest.dependencies['dsh-toy-persona'] !== spec) {
-    profileManifest.dependencies['dsh-toy-persona'] = spec
+  if (profileManifest.dependencies['dsh-persona-switcher'] !== spec) {
+    profileManifest.dependencies['dsh-persona-switcher'] = spec
     writeFileSync(profileManifestPath, `${JSON.stringify(profileManifest, null, 2)}\n`, 'utf8')
     console.log(`install-desktop: profile dependency pinned to ${spec}`)
   }

@@ -11,6 +11,9 @@ permissions:
 
 jobs:
   npm-publish:
+    # Toy forks distribute GitHub release archives under the upstream package name.
+    # Only the original repository may use its npm trusted publisher.
+    if: github.repository == 'yupaoa/dsh-persona-switcher'
     name: publish to npm
     runs-on: ubuntu-latest
     steps:

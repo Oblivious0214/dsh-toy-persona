@@ -161,6 +161,7 @@ let handler
 const logger = { info: () => {}, warn: () => {}, error: () => {}, debug: () => {} }
 /** Command definitions this row registered, by name. */
 const commands = new Map()
+const promptListeners = []
 
 /**
  * A fake agent good enough for the real `/role` handler.
@@ -215,7 +216,10 @@ const ctx = {
     driveEffect(factory)
     return () => {}
   },
-  on: () => () => {},
+  on: (name, listener, options) => {
+    if (name === 'system-prompt/assemble') { assert.equal(options.prepend, true); promptListeners.push(listener) }
+    return () => {}
+  },
   get: () => undefined,
   // The `/role` command is registered through here, and the revision counter's
   // MAIN bump lives in the switch path — so this guard has to be able to run the
@@ -313,6 +317,73 @@ let cleanAmiya = ''
 let cleanWhale = ''
 
 try {
+  await checkAsync('meme preferences round-trip, preserve legacy edits, refresh live prompts, and clear', async () => {
+    const before = (await call('GET','/persona-switcher/role?id=amiya')).value.role
+    const memePreference = {packs:[{id:'cats',name:'猫猫 "精选"'}],tags:['可爱','比心'],prompt:'喜欢猫猫。\n少用夸张表情。',frequency:'low'}
+    const live = makeAgent('meme-live')
+    await commands.get('role').handler({agent:live.agent,rawInput:'amiya'})
+    assert.equal((await call('POST','/persona-switcher/role',{...before,memePreference})).status,200)
+    assert.match([...live.sections.values()].join('\n'),/猫猫[\s\S]*比心[\s\S]*少用夸张/)
+    assert.match([...live.sections.values()].join('\n'),/发表情频率：低频/)
+    const rawAssembly = {sections:[{name:'dsh-expression:companion',text:'斗图规则:主动斗图,不要等用户开口:\n- 发图先 search 拿候选。'}]}
+    const assemble = () => promptListeners[0](rawAssembly,{agent:live.agent},async()=>rawAssembly)
+    assert.notEqual(await assemble(),rawAssembly,'host assembly uses the saved role’s frequency')
+    const read = (await call('GET','/persona-switcher/role?id=amiya')).value.role
+    assert.deepEqual(read.memePreference,memePreference)
+    assert.equal(read.persona,before.persona)
+    const {memePreference: omitted,...legacy} = read
+    await call('POST','/persona-switcher/role',legacy)
+    assert.deepEqual((await call('GET','/persona-switcher/role?id=amiya')).value.role.memePreference,memePreference)
+    assert.equal((await call('POST','/persona-switcher/role',{...read,memePreference:{packs:[],tags:[],prompt:'x'.repeat(4001)}})).status,400)
+    await call('POST','/persona-switcher/role',{...read,memePreference:null})
+    assert.equal([...live.sections.values()].join('\n'),before.persona)
+    assert.equal(await assemble(),rawAssembly,'clearing the preference immediately restores original meme guidance')
+    assert.deepEqual((await call('GET','/persona-switcher/role?id=amiya')).value.role.memePreference,{packs:[],tags:[],prompt:''})
+  })
+  await checkAsync('voice fields persist safely and old clients preserve them', async () => {
+    const before = (await call('GET', '/persona-switcher/role?id=amiya')).value.role
+    assert.equal(before.voiceId, '')
+    const fields = { voiceId: 'test-reference-id', voicePreviewText: '你好 "朋友"\\test\n第二句：你好' }
+    const saved = await call('POST', '/persona-switcher/role', { ...before, ...fields })
+    assert.equal(saved.status, 200)
+    const read = (await call('GET', '/persona-switcher/role?id=amiya')).value.role
+    assert.equal(read.voiceId, fields.voiceId)
+    assert.equal(read.voicePreviewText, fields.voicePreviewText)
+    assert.equal(read.persona, before.persona, 'media must not enter the persona prompt')
+    const { voiceId, voicePreviewText, ...legacy } = read
+    await call('POST', '/persona-switcher/role', legacy)
+    assert.equal((await call('GET', '/persona-switcher/role?id=amiya')).value.role.voiceId, fields.voiceId)
+    assert.equal((await call('POST', '/persona-switcher/role', {...read, voiceId:'bad\nid'})).status, 400)
+    assert.equal((await call('POST', '/persona-switcher/role', {...read, voicePreviewText:'x'.repeat(301)})).status, 400)
+    await call('POST', '/persona-switcher/role', {...read, voiceId:'', voicePreviewText:''})
+    assert.equal((await call('GET', '/persona-switcher/role?id=amiya')).value.role.voiceId, '')
+  })
+  await checkAsync('persona avatars are independent and session defaults survive replacement and clearing', async () => {
+    const imageA = asDataUrl(artwork.png, 'image/png')
+    const imageB = asDataUrl(artwork.webp, 'image/webp')
+    assert.equal((await call('POST', '/persona-switcher/avatar?role=amiya', {image:'https://example.com/a.svg'})).status, 400)
+    assert.equal((await call('POST', '/persona-switcher/avatar?role=missing', {image:imageA})).status, 404)
+    const uploaded = await call('POST', '/persona-switcher/avatar?role=amiya', {image:imageA})
+    assert.equal(uploaded.status, 200)
+    assert.equal((await call('GET', uploaded.value.avatar)).bytes.toString('base64'), artwork.png.toString('base64'))
+    assert.equal((await call('GET', '/persona-switcher/role?id=amiya')).value.role.avatar, uploaded.value.avatar)
+    assert.equal((await rolesOf()).find(role => role.id === 'amiya').avatar, uploaded.value.avatar)
+    await runRole('avatar-session-a', 'amiya')
+    const manifest = join(home,'persona-switcher','avatars','bindings.json')
+    const before = await readFile(manifest, 'utf8')
+    assert.equal((await call('GET', '/persona-switcher/session-avatar?session=avatar-session-a')).value.avatar, null)
+    assert.equal(await readFile(manifest,'utf8'),before,'GET must not capture a session')
+    assert.equal((await call('POST','/persona-switcher/session-avatar',{sessionId:'avatar-session-a'})).value.avatar,imageA)
+    await call('POST', '/persona-switcher/avatar?role=amiya', {image:imageB})
+    assert.equal((await call('POST','/persona-switcher/session-avatar',{sessionId:'avatar-session-a'})).value.avatar,imageA)
+    await runRole('avatar-session-b', 'amiya')
+    assert.equal((await call('POST','/persona-switcher/session-avatar',{sessionId:'avatar-session-b'})).value.avatar,imageB)
+    await call('DELETE','/persona-switcher/avatar?role=amiya')
+    assert.equal((await call('GET','/persona-switcher/session-avatar?session=avatar-session-a')).value.avatar,imageA)
+    assert.equal((await call('GET','/persona-switcher/role?id=amiya')).value.role.avatar,null)
+    assert.equal((await call('POST','/persona-switcher/session-avatar',{sessionId:'unknown-avatar-session'})).value.avatar,null)
+    assert.equal((await call('POST','/persona-switcher/session-avatar',{})).status,400)
+  })
   // ---------------------------------------------------------------------------
   // 1. Upload, report, serve
   // ---------------------------------------------------------------------------
