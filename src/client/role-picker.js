@@ -51,7 +51,7 @@ const loadLiveRole = async (sessionId, api) => {
   if (typeof sessionId !== 'string' || sessionId === '') return null
   try {
     const payload = await api('GET', `/session?session=${encodeURIComponent(sessionId)}`)
-    const live = payload?.liveRoleId ?? payload?.roleId
+    const live = payload && Object.hasOwn(payload, 'liveRoleId') ? payload.liveRoleId : payload?.roleId
     return typeof live === 'string' && live !== '' ? live : null
   } catch {
     return null
@@ -64,7 +64,7 @@ const loadLiveRole = async (sessionId, api) => {
  * @param deps - `{ api, t }`.
  * @returns `none` first, then the library in its own order.
  */
-const loadOptions = async (session, { api, t }) => {
+export const loadOptions = async (session, { api, t }) => {
   const live = await loadLiveRole(session?.sessionId, api)
   const payload = await api('GET', '/roles')
   const catalogue = Array.isArray(payload?.roles) ? payload.roles : []
@@ -94,7 +94,7 @@ const loadOptions = async (session, { api, t }) => {
  * @param session - the popup's session.
  * @param deps - `{ sessions }`.
  */
-const selectRole = async (option, session, { sessions }) => {
+export const selectRole = async (option, session, { sessions }) => {
   const sessionId = session?.sessionId
   const face = sessions?.binding?.(sessionId)?.session ?? session
   if (typeof face?.command !== 'function') {
