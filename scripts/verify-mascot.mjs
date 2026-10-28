@@ -317,6 +317,25 @@ let cleanAmiya = ''
 let cleanWhale = ''
 
 try {
+  await checkAsync('change watches wait, wake on rebinding, and release on client cancellation', async () => {
+    const revision = await revisionNow()
+    const first = await call('GET', '/persona-switcher/changes?since=-1')
+    assert.equal(first.value.revision, revision)
+    const controller = new AbortController()
+    let completed = false
+    const waiting = fetch(`${origin}/persona-switcher/changes?since=${revision}`, {signal: controller.signal})
+      .then(response => response.json()).then(value => { completed = true; return value })
+    await new Promise(resolve => setTimeout(resolve, 60))
+    assert.equal(completed, false, 'unchanged revision must hold the response')
+    await runRole('change-watch', 'amiya')
+    const changed = await waiting
+    assert.ok(changed.revision > revision)
+    const abandoned = new AbortController()
+    const closed = fetch(`${origin}/persona-switcher/changes?since=${changed.revision}`, {signal: abandoned.signal}).catch(error => error.name)
+    await new Promise(resolve => setTimeout(resolve, 30)); abandoned.abort()
+    assert.equal(await closed, 'AbortError')
+    assert.equal((await call('GET','/persona-switcher/revision')).status, 200)
+  })
   await checkAsync('meme preferences round-trip, preserve legacy edits, refresh live prompts, and clear', async () => {
     const before = (await call('GET','/persona-switcher/role?id=amiya')).value.role
     const memePreference = {packs:[{id:'cats',name:'猫猫 "精选"'}],tags:['可爱','比心'],prompt:'喜欢猫猫。\n少用夸张表情。',frequency:'low'}

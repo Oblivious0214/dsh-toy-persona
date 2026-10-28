@@ -1,5 +1,7 @@
 # 人设切换
 
+> 0.3.1-toy.14：性能修订。人设选择器共用一条可取消的变更等待请求，取代固定间隔读取；隐藏页面与卸载时停止请求。后端无变化时最多等待 25 秒后续接，不重复读取角色库。旧宿主不支持该接口时降为 30 秒兜底。当前立绘模块仍不默认挂载，其历史轮询也一并移除。安装包见下方 GitHub 预发布附件。
+
 > **在当前对话里换人设，下一次回复就按新的人设说话。**
 > 切换不会更换模型、工具或权限。每个对话单独记住选择，重启后仍保留。
 
@@ -15,11 +17,13 @@
 
 ## 安装
 
+**搭配 QQ 聊天界面安装时，请先关闭其他 UI 美化插件。** QQ 可能与其他皮肤、气泡或聊天布局插件冲突；安装后先确认界面正常，再按需逐个恢复。独立对话分段插件应停用，避免与 QQ 内置分段重复渲染。
+
 检测到已启用的 Fish TTS 后，角色行显示「绑定音色」。点击后输入 Fish 音色 ID，可直接点击弹窗内的「试听」试听当前输入，再保存绑定；留空保存可解除绑定。角色编辑区只编辑人设文字，已有音色绑定会保留。角色库中的「设置头像」可绑定默认头像，QQ 会为首次采用它的对话保存头像，手动会话头像优先。详见[媒体设置与接口说明](docs/media-integration.md)。
 
 检测到已启用且接口可用的 dsh-meme 后，角色行显示「表情偏好」，默认隐藏。可多选优先图库，自动汇总对应标签；选择发表情频率（跟随 dsh-meme、低频、适中、高频、不主动发），补充提示词并预览；清空后保存解除偏好。偏好跟随当前对话的人设；角色频率会在该会话中覆盖冲突的通用主动斗图建议，保留发送方式和渠道限制，不改 dsh-meme 插件或全局设置。当前 dsh-meme 无角色频率接口，频率和图库选择均为提示词偏好，需由模型执行；图库仍须在 dsh-meme 中启用。
 
-下载 [v0.3.1-toy.13 发布附件](https://github.com/Oblivious0214/dsh-toy-persona/releases/tag/v0.3.1-toy.13) 中的 `dsh-persona-switcher-0.3.1-toy.13.tgz`，在 DSH 插件页通过本地安装包入口安装，完成后按提示重启。源码 ZIP 不用于安装；附件以 Release 实际发布为准。
+下载 [v0.3.1-toy.14 发布附件](https://github.com/Oblivious0214/dsh-toy-persona/releases/tag/v0.3.1-toy.14) 中的 `dsh-persona-switcher-0.3.1-toy.14.tgz`，在 DSH 插件页通过本地安装包入口安装，完成后按提示重启。源码 ZIP 不用于安装；附件以 Release 实际发布为准。
 
 维护分支：[feat/dsh-toy-persona](https://github.com/Oblivious0214/dsh-toy-persona/tree/feat/dsh-toy-persona)。完整改动与兼容范围见 [发布说明](RELEASE.md)。本分支通过 GitHub 附件分发，不向 npm 发布同名包；工作区迁移脚本不随公开包提供。
 
@@ -35,4 +39,4 @@
 
 同时感谢 [DeepSeek Harness](https://github.com/deepseek-ai/deepseek-harness) 提供人设与插件接口。
 
-当前包名：`dsh-persona-switcher` · 版本：`0.3.1-toy.13` · [输入框适配记录](docs/composer-compatibility.md) · [历史与技术说明](docs/README.previous.md)
+当前包名：`dsh-persona-switcher` · 版本：`0.3.1-toy.14` · [输入框适配记录](docs/composer-compatibility.md) · [历史与技术说明](docs/README.previous.md)

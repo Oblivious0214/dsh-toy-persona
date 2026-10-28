@@ -50,6 +50,12 @@ const fixtures = window.fixtures = {
 }
 fixtures.config = JSON.parse(localStorage.getItem('persona-config') || '{}')
 fixtures.failDefaultSave = false
+const changeWaiters = new Set()
+let revision = fixtures.revision
+Object.defineProperty(fixtures, 'revision', { get: () => revision, set: value => {
+  revision = value
+  for (const finish of [...changeWaiters]) finish()
+} })
 window.fetch = async (url, init) => {
   if (fixtures.slow) await new Promise((resolve) => setTimeout(resolve, fixtures.slow))
   const path = new URL(url, location.href)
@@ -90,6 +96,14 @@ window.fetch = async (url, init) => {
   } else if (path.pathname.endsWith('/session')) {
     if (fixtures.failSession) return { ok: false, status: 503, json: async () => ({ error: 'Session offline' }) }
     payload = { liveRoleId: fixtures.live[path.searchParams.get('session')], roleId: 'char001' }
+  } else if (path.pathname.endsWith('/changes')) {
+    if (Number(path.searchParams.get('since')) === fixtures.revision) await new Promise((resolve, reject) => {
+      const finish = () => { changeWaiters.delete(finish); init?.signal?.removeEventListener('abort', abort); resolve() }
+      const abort = () => { changeWaiters.delete(finish); reject(new DOMException('Aborted', 'AbortError')) }
+      changeWaiters.add(finish)
+      init?.signal?.addEventListener('abort', abort, {once:true})
+    })
+    payload = { revision: fixtures.revision }
   } else if (path.pathname.endsWith('/revision')) {
     payload = { revision: fixtures.revision }
   } else if (path.pathname.endsWith('/role') && init?.method === 'GET') {

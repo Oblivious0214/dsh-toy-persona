@@ -1,5 +1,6 @@
 import { createElement as h, useEffect, useRef, useState } from 'react'
 import { createRoot } from 'react-dom/client'
+import { subscribePersonaChanges } from './changes.js'
 
 /**
  * The persona mascot, browser half: the on-screen companion that shows the
@@ -73,41 +74,12 @@ const POS_EVENT = 'persona-switcher:mascot-pos-reset'
 const EDGE = 8
 /** Default artwork width in px, used until the role reports its own box. */
 const DEFAULT_WIDTH = 140
-/** How often to re-ask the host "who is this session" and "who has artwork", in ms. */
-const POLL_MS = 5000
-/**
- * How often to re-ask "which role is this session bound to", in ms, when the
- * host has no counter endpoint.
- *
- * `/role <id>` rebinds the session WITHOUT changing the seat, so a re-read is the
- * only way the mascot can notice a live switch. A host that publishes the
- * revision counter is polled much faster than this (see `REVISION_POLL_MS`);
- * this is the fallback cycle for a host too old to have one.
- */
-const SESSION_POLL_MS = 1500
-/**
- * How often to ask "has anything I draw changed", in ms.
- *
- * `/role <id>` rebinds a session inside the HOST process and broadcasts nothing
- * to the browser, so there is no signal to listen for — polling is the only way
- * a client can notice. Polling the role itself this often would drag the role's
- * whole prose along every time, so this asks a counter endpoint instead
- * (`GET /revision`: one integer, no disk read) and re-reads the role only when
- * the number moves. That is what makes a switch look instant.
- */
-const REVISION_POLL_MS = 250
-/** Backoff after a failed role read, in ms. */
+/** Retry only failed reads; successful state follows the shared change stream. */
 const SESSION_RETRY_MS = 8000
-/**
- * The cycle used when `/revision` is missing (a 404 from an older host) or
- * unreadable. A normal outcome, not an error: the mascot then re-reads its role
- * on the slow cycle and still catches a live switch within a few seconds.
- */
-const REVISION_SLOW_MS = 1500
-/** How often to re-probe for a `sidebarRight` service that is not up yet, in ms. */
-const PROBE_MS = 250
-/** How long to keep probing before falling back to "no seat", in ms (~1 min). */
-const PROBE_FOR_MS = 60000
+/** Missing optional services are probed slowly and never in a tight loop. */
+const PROBE_MS = 2000
+const POLL_MS = 30000
+const PROBE_FOR_MS = 10000
 
 /** `true` while the standalone client module runs (no DOM ⇒ nothing to mount). */
 const hasDom = () => typeof document !== 'undefined' && document.body !== null
@@ -655,44 +627,13 @@ const PersonaMascot = (props) => {
   const [session, setSession] = useState(null)
   const [roles, setRoles] = useState([])
   const [size, setSize] = useState(() => readSize())
-  /**
-   * The last revision the host published.
-   *
-   * Non-null only after a counter answer moved, so this is both the trigger for
-   * a role re-read and the record of what the host last reported. It renders
-   * nothing: it exists to re-run the role effect.
-   */
-  const [revision, setRevision] = useState(null)
-  /**
-   * `true` while the host answers the revision counter.
-   *
-   * Reported for diagnostics (and asserted in the harness) so "the mascot is
-   * slow because this host has no counter" is distinguishable from "the mascot
-   * is slow".
-   */
-  const [fast, setFast] = useState(false)
-  /** Last value published to `fast`, so a no-op poll does not re-render. */
-  const fastRef = useRef(false)
-  const reportFast = (value) => {
-    if (fastRef.current === value) return
-    fastRef.current = value
-    setFast(value)
-  }
+  const [revision, setRevision] = useState(0)
   const nodeRef = useRef(null)
   const dragRef = useRef(null)
-  /**
-   * The role re-read cycle: fast when the host publishes a counter, slow when it
-   * does not, and slow while this window is hidden.
-   *
-   * Read through the ref, not the state variable: the poll effect is not re-run
-   * when `fast` changes, so a captured `fast` would keep a stale cadence — an
-   * old host's slow answer would arrive but the loop would carry on at full
-   * speed, and a downed host could never be backed off at all.
-   */
-  const pollMs = () => {
-    if (document.visibilityState === 'hidden') return REVISION_SLOW_MS
-    return fastRef.current ? REVISION_POLL_MS : REVISION_SLOW_MS
-  }
+  useEffect(() => {
+    if (!seat) return undefined
+    return subscribePersonaChanges(() => setRevision(value => value + 1))
+  }, [seat])
 
   // Condition b: a session seat is on screen. The service may not be registered
   // yet at boot (the wallpaper engine polls for the same reason), so a missing
@@ -747,191 +688,37 @@ const PersonaMascot = (props) => {
     }
   }, [ctx])
 
-  // Condition c: that session's role.
-  //
-  // Polled, not read once. `/role <id>` changes the binding in the middle of a
-  // live session without changing the seat, so a read that only happened when the
-  // seat changed left the mascot showing the OLD role until the user left and
-  // re-entered the conversation.
-  //
-  // The cadence depends on the host: a host with the revision counter is polled
-  // every 250ms and this read follows a counter change immediately (`revision` is
-  // a dependency), while an older host without one falls back to a 1.5s cycle.
-  //
-  // This also covers the reverse: `/role none` makes it stop, and a role whose
-  // artwork the host no longer knows about stops with it.
+  // Session and artwork reads run only on seat/change notifications.
   useEffect(() => {
-    if (seat === undefined || seat === null) {
-      setSession(null)
-      return undefined
-    }
+    if (!seat) { setSession(null); setRoles([]); return undefined }
     const controller = new AbortController()
-    let cancelled = false
-    let timer = null
-    let reported = null
-    /** `true` once a read has failed, so the cycle backs off instead of hammering. */
-    let failing = false
+    let timer
     const load = async () => {
+      if (document.visibilityState === 'hidden' || controller.signal.aborted) return
       const read = await api(`/session?session=${encodeURIComponent(String(seat))}`, controller.signal)
-      if (cancelled || controller.signal.aborted) return
-      failing = !read.ok
-      const payload = read.ok ? read.value : null
-      const roleId = payload === null ? null : (payload.roleId ?? null)
-      const next = typeof roleId === 'string' && roleId !== '' ? roleId : null
-      // Only a CHANGE republishes: an identical answer every cycle must not
-      // re-render the mascot (and must not restart the artwork's fade).
-      if (next !== reported) {
-        reported = next
-        setSession(next)
-      }
+      if (controller.signal.aborted) return
+      if (!read.ok) { timer = window.setTimeout(load, SESSION_RETRY_MS); return }
+      const roleId = read.value?.roleId ?? null
+      setSession(typeof roleId === 'string' && roleId ? roleId : null)
     }
-    const arm = (delay) => {
-      timer = window.setTimeout(async () => {
-        // The id has fired, so it must not be treated as a live timer any more:
-        // leaving it there is what let `visibilitychange` and this callback both
-        // schedule the next tick, silently doubling the chain.
-        timer = null
-        if (cancelled) return
-        await load()
-        if (cancelled) return
-        // `failing` is set by the read itself, so the backoff is reachable. The
-        // cadence is read from the ref, not from a captured `fast`, so a host
-        // that turns out to be an old one slows down without waiting for a
-        // revision change that a downed host could never send.
-        arm(failing ? SESSION_RETRY_MS : pollMs())
-      }, delay)
-    }
-    // Read immediately when the seat appears — arriving in a session must not
-    // wait for a poll cycle — then keep asking on the current cycle.
     void load()
-    arm(pollMs())
-    return () => {
-      cancelled = true
-      if (timer !== null) window.clearTimeout(timer)
-      controller.abort()
-    }
+    return () => { window.clearTimeout(timer); controller.abort() }
   }, [seat, revision])
 
-  // The fast question: "has anything I draw changed?"
-  //
-  // Nothing is broadcast when a session is rebound, so this counter is how a
-  // `/role` switch reaches the browser at all. It publishes state only when the
-  // number MOVES, which re-runs the role read above through its dependency — so
-  // a switch is picked up in one poll cycle rather than one role cycle.
-  //
-  // A 404 means the host predates this endpoint. That is a normal answer, not a
-  // failure: the cadence drops to the slow one and the mascot keeps working.
   useEffect(() => {
-    let cancelled = false
-    let timer = null
-    let last = null
-    /** True only while a read is actually running. */
-    let inFlight = false
-    // A hidden window is not being looked at, so it does not need quarter-second
-    // answers: it falls back to the slow cycle (and asks once on the way back,
-    // so returning to the window is still immediate).
-    const cadence = () => (document.visibilityState === 'hidden' ? REVISION_SLOW_MS : REVISION_POLL_MS)
-    const ask = async () => {
-      inFlight = true
-      try {
-        const read = await api('/revision', undefined)
-        if (cancelled) return false
-        // An unanswered read backs off; a 404 is an ANSWER (this host predates
-        // the endpoint) and only means the slow cycle, never a retry storm.
-        if (!read.ok) return false
-        const next = read.value === null ? null : Number(read.value.revision)
-        if (!Number.isFinite(next)) {
-          reportFast(false)
-          return true
-        }
-        reportFast(true)
-        if (last !== null && next !== last) setRevision(next)
-        last = next
-        return true
-      } finally {
-        inFlight = false
-      }
-    }
-    const arm = (delay) => {
-      timer = window.setTimeout(async () => {
-        // Null it the moment it fires, so a pending timer is never mistaken for
-        // a spent one.
-        timer = null
-        if (cancelled) return
-        const ok = await ask()
-        if (cancelled) return
-        // Exactly one chain: by now `timer` is null either way, so this is the
-        // only place a new tick is scheduled from the timer path.
-        if (timer === null) arm(ok ? cadence() : REVISION_SLOW_MS)
-      }, delay)
-    }
-    arm(cadence())
-    const onVisibility = () => {
-      if (document.visibilityState !== 'visible') return
-      // A read already in flight will schedule the next tick itself, so arming
-      // here would start a SECOND chain — that is what permanently doubled the
-      // poll rate after a hide/show. Otherwise, ask at once.
-      if (inFlight) return
-      if (timer !== null) window.clearTimeout(timer)
-      timer = null
-      arm(0)
-    }
-    document.addEventListener('visibilitychange', onVisibility)
-    return () => {
-      cancelled = true
-      if (timer !== null) window.clearTimeout(timer)
-      document.removeEventListener('visibilitychange', onVisibility)
-    }
-  }, [])
-
-  // Condition d: which roles have artwork. Re-read while a seat is on screen
-  // (catches a role switch made from the settings page, another window, or the
-  // command line) and eagerly on the settings page's change broadcast.
-  useEffect(() => {
-    if (seat === undefined || seat === null || session === null) return undefined
+    if (!seat || !session) { setRoles([]); return undefined }
     const controller = new AbortController()
-    let timer = null
-    let cancelled = false
-    /** One read at a time: a broadcast and a timer must not stack up. */
-    let inFlight = false
+    let timer
     const load = async () => {
-      if (cancelled || inFlight) return
-      inFlight = true
-      let ok = false
-      try {
-        const read = await api('/roles', controller.signal)
-        if (cancelled || controller.signal.aborted) return
-        ok = read.ok
-        const payload = read.ok ? read.value : null
-        if (payload !== null && Array.isArray(payload.roles)) setRoles(payload.roles)
-      } finally {
-        inFlight = false
-      }
-      if (cancelled) return
-      // A failed read keeps the artwork it already has and retries on the slow
-      // cycle. It MUST still schedule the next attempt: the old version set its
-      // timer after the await, so one failed fetch stopped this loop for good
-      // and a role whose artwork was imported from the settings page never
-      // appeared. Re-arming here also keeps exactly ONE chain alive.
-      timer = window.setTimeout(() => void load(), ok ? POLL_MS : SESSION_RETRY_MS)
-    }
-    /** A broadcast starts a fresh read and cancels the one the timer had queued. */
-    const onChanged = () => {
-      if (timer !== null) {
-        window.clearTimeout(timer)
-        timer = null
-      }
-      void load()
+      if (document.visibilityState === 'hidden' || controller.signal.aborted) return
+      const read = await api('/roles', controller.signal)
+      if (controller.signal.aborted) return
+      if (read.ok && Array.isArray(read.value?.roles)) setRoles(read.value.roles)
+      else timer = window.setTimeout(load, SESSION_RETRY_MS)
     }
     void load()
-    window.addEventListener(CHANGED_EVENT, onChanged)
-    return () => {
-      cancelled = true
-      window.removeEventListener(CHANGED_EVENT, onChanged)
-      if (timer !== null) window.clearTimeout(timer)
-      controller.abort()
-    }
-  }, [seat, session])
+    return () => { window.clearTimeout(timer); controller.abort() }
+  }, [seat, session, revision])
 
   // Condition a, second reader: the settings page owns this switch; here it is
   // only re-read on its broadcast or when another window changes the value.
@@ -1458,8 +1245,6 @@ export const mascotInternals = {
   reducedMotion,
   FLIP_TOTAL_MS,
   FLIP_COMMIT_MARGIN_MS,
-  REVISION_POLL_MS,
-  REVISION_SLOW_MS,
   MascotGate,
   PersonaMascot
 }

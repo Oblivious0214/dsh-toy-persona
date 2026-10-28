@@ -612,7 +612,11 @@ let rolesShouldFail = false
 /** When true, every request rejects outright — a host that is not listening. */
 let hostDown = false
 const revisionReads = { count: 0 }
+let changeVersion = 1
+const changeWaiters = new Set()
 const bumpRevision = () => {
+  changeVersion++
+  for (const resolve of [...changeWaiters]) resolve()
   revisionAnswer = { ok: true, revision: (revisionAnswer?.revision ?? 0) + 1 }
 }
 /** Treat the host as one without a counter endpoint (a 404). */
@@ -625,6 +629,16 @@ globalThis.fetch = async (url, options = {}) => {
   requests.push(target)
   if (options.signal?.aborted) throw new FakeAbortError('aborted')
   if (hostDown) throw new TypeError('fetch failed')
+  if (target.includes('/changes')) {
+    const since = Number(new URL(target, 'http://localhost').searchParams.get('since'))
+    if (since === changeVersion) await new Promise((resolve, reject) => {
+      const done = () => { changeWaiters.delete(done); options.signal?.removeEventListener('abort', abort); resolve() }
+      const abort = () => { changeWaiters.delete(done); reject(new FakeAbortError('aborted')) }
+      changeWaiters.add(done)
+      options.signal?.addEventListener('abort', abort, { once: true })
+    })
+    return { ok: true, status: 200, json: async () => ({ ok: true, revision: changeVersion }) }
+  }
   if (target.includes('/revision')) {
     revisionReads.count += 1
     if (revisionAnswer === null) {
@@ -747,8 +761,6 @@ const CHANGED_EVENT = mascot.CHANGED_EVENT
 const SHOWN_EVENT = mascot.SHOWN_EVENT
 const SIZE_EVENT = mascot.SIZE_EVENT
 const MOTION_EVENT = mascot.MOTION_EVENT
-const REVISION_POLL_MS = mascot.mascotInternals.REVISION_POLL_MS
-const REVISION_SLOW_MS = mascot.mascotInternals.REVISION_SLOW_MS
 // The client's API prefix and the host's default `routePrefix` are two copies of
 // one fact — the bundle cannot read the host's config — so they are pinned
 // together here. Changing the host default without changing the client would make
@@ -945,7 +957,7 @@ check(
 
 {
   resetRequests()
-  sessionAnswer = { ok: true, roleId: null }
+  sessionAnswer = { ok: true, roleId: null }; bumpRevision()
   rolesAnswer = { ok: true, roles: [{ id: 'session-a', name: 'A', mascot: null }] }
   const view = renderComponent(PersonaMascot, { ctx: mkCtx(mkSeat('session-a').service), t: IDENTITY, onShown: () => {} })
   await poll('a seat on screen ⇒ /session is asked', () => countOf('/session') > 0)
@@ -961,7 +973,7 @@ check(
 
 {
   resetRequests()
-  sessionAnswer = { ok: true, roleId: 'amiya' }
+  sessionAnswer = { ok: true, roleId: 'amiya' }; bumpRevision()
   rolesAnswer = { ok: true, roles: [{ id: 'amiya', name: '阿米娅', mascot: null }] }
   const view = renderComponent(PersonaMascot, { ctx: mkCtx(mkSeat('session-a').service), t: IDENTITY, onShown: () => {} })
   await poll('a role is asked about its artwork through /roles', () => {
@@ -975,7 +987,7 @@ check(
 
 {
   resetRequests()
-  sessionAnswer = { ok: true }
+  sessionAnswer = { ok: true }; bumpRevision()
   rolesAnswer = { ok: true, roles: [{ id: 'amiya', name: '阿米娅', mascot: { image: '/x.png', box: '64x64' } }] }
   const view = renderComponent(PersonaMascot, { ctx: mkCtx(mkSeat('session-a').service), t: IDENTITY, onShown: () => {} })
   await poll('the session query resolves', () => {
@@ -1026,7 +1038,7 @@ check(
   // depends on the context identity, so a fresh object per render would re-arm
   // the subscription every time and keep clearing the session (which is correct
   // for a replaced service, and fatal for a test that fabricates one per call).
-  sessionAnswer = { ok: true, roleId: 'amiya' }
+  sessionAnswer = { ok: true, roleId: 'amiya' }; bumpRevision()
   rolesAnswer = {
     ok: true,
     roles: [
@@ -1056,7 +1068,7 @@ check(
 
   /* 4a. Hysteresis — a seat change drops the old role before the new one is known. */
   resetRequests()
-  sessionAnswer = { ok: true, roleId: 'whale-girl' }
+  sessionAnswer = { ok: true, roleId: 'whale-girl' }; bumpRevision()
   visibleSeat.set('session-b')
   view.render()
   check('seat change stops showing the previous artwork immediately', imageOf(view.element) === undefined, layerOf(view.element)?.className)
@@ -1064,7 +1076,7 @@ check(
   check('the previous session role is never reused for the new seat', !requests.some((url) => url.includes('session-a')))
 
   /* 4b. Back to a role with artwork, then drag it. */
-  sessionAnswer = { ok: true, roleId: 'amiya' }
+  sessionAnswer = { ok: true, roleId: 'amiya' }; bumpRevision()
   visibleSeat.set('session-a')
   view.render()
   await poll('artwork returns for the restored seat', () => {
@@ -1322,7 +1334,7 @@ check(
   // the artwork keeps its own aspect ratio.
   storage.set(SIZE_KEY, '2')
   storage.set(SHOWN_KEY, '1')
-  sessionAnswer = { ok: true, roleId: 'amiya' }
+  sessionAnswer = { ok: true, roleId: 'amiya' }; bumpRevision()
   rolesAnswer = {
     ok: true,
     roles: [{ id: 'amiya', name: '阿米娅', mascot: { image: '/persona-switcher/mascot-file/amiya-abc.png', box: '512x768' } }]
@@ -1387,203 +1399,31 @@ check(
   localStorageStub.removeItem(SHOWN_KEY)
 }
 
-/* ── 10. A live /role switch reaches the mascot WITHOUT re-entering ─────── */
-// Sections 10 and 11 wait on the real clock: the thing under test IS a poll
-// interval, and the fake timer queue (built for the 5s artwork poll) cannot
-// express "fires in 250ms". Each view is unmounted when it is done, so a dead
-// mount's own slow poll cannot drift into the next section's observations.
+/* ── 10. Changes update mounted artwork; idle state performs no repeated reads. ── */
 const realSleep = sleep
 {
-  // The reported bug: `/role amiya` inside a session left the mascot showing the
-  // previous role until the user left and re-entered the conversation, because
-  // the role was only read when the SEAT changed. A seat does not change when a
-  // session is rebound, so the role has to be re-read on its own cycle.
   storage.delete(SHOWN_KEY)
-  noRevisionEndpoint()
+  sessionAnswer = { ok: true, roleId: 'amiya' }; bumpRevision()
+  rolesAnswer = { ok: true, roles: [
+    { id: 'amiya', name: 'A', mascot: { image: '/persona-switcher/mascot-file/a.png', box: '512x768' } },
+    { id: 'whale-girl', name: 'W', mascot: { image: '/persona-switcher/mascot-file/w.png', box: '400x600' } }
+  ] }
   resetRequests()
-  sessionAnswer = { ok: true, roleId: 'amiya' }
-  rolesAnswer = {
-    ok: true,
-    roles: [
-      { id: 'amiya', name: '阿米娅', mascot: { image: '/persona-switcher/mascot-file/amiya-abc.png', box: '512x768' } },
-      { id: 'whale-girl', name: '鲸鱼娘', mascot: { image: '/persona-switcher/mascot-file/whale-def.png', box: '400x600' } }
-    ]
-  }
-  const seat = mkSeat('session-live')
-  const view = renderComponent(PersonaMascot, { ctx: mkCtx(seat.service), t: IDENTITY, onShown: () => {} })
-  await realPoll('the mascot shows the role the session starts on', () => {
-    view.render()
-    return imageOf(view.element)?.props?.src?.includes('amiya-abc') === true
-  }, 8000)
-  check('the starting role is the one on screen', imageOf(view.element).props.src.includes('amiya-abc'))
-  const before = countOf('/session')
-
-  // Now the user switches role in the SAME session: only the answer changes,
-  // exactly as the host does it (the seat never moves). The replacement is shown
-  // by turning a card, so the new art is on screen (as the back face) before the
-  // turn commits to it — `paintsSrc` asks the honest question.
-  sessionAnswer = { ok: true, roleId: 'whale-girl' }
-  await realPoll('a switch is picked up without re-entering the session', () => {
-    view.render()
-    return paintsSrc(view.element, 'whale-def')
-  }, 9000)
-  check('the artwork follows the new role', paintsSrc(view.element, 'whale-def'))
-  check('the accessible label follows too', String(layerOf(view.element).props['aria-label']).includes('鲸鱼娘'))
-  check('picking it up meant asking the host again', countOf('/session') > before, `${before} -> ${countOf('/session')}`)
-
-  // And the other direction: /role none must take it away just as promptly.
-  sessionAnswer = { ok: true, roleId: null }
-  await realPoll('clearing the role takes the mascot away', () => {
-    view.render()
-    return hiddenMascot(view.element)
-  }, 9000)
-  check('nothing keeps showing after /role none', imageOf(view.element) === undefined)
+  const view = renderComponent(PersonaMascot, { ctx: mkCtx(mkSeat('session-live').service), t: IDENTITY, onShown: () => {} })
+  await realPoll('initial artwork loads', () => { view.render(); return paintsSrc(view.element, '/a.png') })
+  await realSleep(1200)
+  const sessionReads = countOf('/session'), roleReads = countOf('/roles'), watches = countOf('/changes')
+  await realSleep(600)
+  check('unchanged state does not reload session or library', countOf('/session') === sessionReads && countOf('/roles') === roleReads)
+  check('one held request replaces revision polling', countOf('/changes') === watches && countOf('/revision') === 0)
+  sessionAnswer = { ok: true, roleId: 'whale-girl' }; bumpRevision()
+  await realPoll('server notification switches artwork immediately', () => { view.render(); return paintsSrc(view.element, '/w.png') })
+  check('switch fetches the new binding once', countOf('/session') === sessionReads + 1)
+  sessionAnswer = { ok: true, roleId: null }; bumpRevision()
+  await realPoll('unbind removes artwork', () => { view.render(); return hiddenMascot(view.element) })
   view.unmount()
-}
-
-/* ── 11. The revision counter: what makes a switch look instant ─────────── */
-{
-  const fastRole = (id, src) => ({ id, name: id, mascot: { image: src, box: '512x768' } })
-  storage.delete(SHOWN_KEY)
-  sessionAnswer = { ok: true, roleId: 'amiya' }
-  rolesAnswer = {
-    ok: true,
-    roles: [fastRole('amiya', '/persona-switcher/mascot-file/a.png'), fastRole('whale-girl', '/persona-switcher/mascot-file/w.png')]
-  }
-
-  // (a) A host WITH the counter: a live switch must be picked up within a poll
-  // cycle, i.e. almost immediately — NOT after the 1.5s role cycle.
-  revisionReads.count = 0
-  bumpRevision()
-  resetRequests()
-  const view = renderComponent(PersonaMascot, { ctx: mkCtx(mkSeat('session-fast').service), t: IDENTITY, onShown: () => {} })
-  await realPoll('the fast mascot mounts', () => {
-    view.render()
-    return imageOf(view.element)?.props?.src?.includes('/a.png') === true
-  }, 8000)
-  check('the fast mascot mounts', imageOf(view.element)?.props?.src?.includes('/a.png') === true)
-  await realPoll('the revision counter is being polled', () => revisionReads.count > 0, 4000)
-  const beforeCount = countOf('/session')
-  const startedAt = Date.now()
-  sessionAnswer = { ok: true, roleId: 'whale-girl' }
-  bumpRevision()
-  await realPoll('one counter cycle is enough to follow a switch', () => {
-    view.render()
-    return paintsSrc(view.element, '/w.png')
-  }, 4000)
-  const took = Date.now() - startedAt
-  check('the switch landed on a counter cycle, not a slow role cycle', took < REVISION_SLOW_MS, `${took}ms`)
-  check('and it cost one extra role read', countOf('/session') === beforeCount + 1, `${beforeCount} -> ${countOf('/session')}`)
-  check('the counter is polled several times a second', revisionReads.count >= 2, String(revisionReads.count))
-
-  // A FAILED artwork read must not end the loop. The loop used to set its next
-  // timer after the await, so one 500 stopped it for good and a role whose
-  // artwork was imported from the settings page never appeared until the seat
-  // changed. The loop must keep trying on the slow cycle.
-  rolesShouldFail = true
-  const readsBeforeFailure = countOf('/roles')
-  await realSleep(700)
-  const readsAfterFailure = countOf('/roles')
-  rolesShouldFail = false
-  await realPoll('the artwork read keeps retrying after a failure', () => countOf('/roles') > readsAfterFailure, 12000)
-  check('a failing artwork read still schedules the next attempt', countOf('/roles') > readsAfterFailure, `${readsBeforeFailure} -> ${readsAfterFailure} -> ${countOf('/roles')}`)
-  check('the retry is on the slow cycle, not a hot loop', readsAfterFailure - readsBeforeFailure <= 1, `${readsAfterFailure - readsBeforeFailure} extra read(s) in 700ms`)
-
-  // A hidden tab backs off — the mascot is not being looked at — and coming back
-  // asks at once, so returning to the window is still instant.
-  const hiddenBefore = revisionReads.count
-  documentStub.visibilityState = 'hidden'
-  await realSleep(700)
-  const hiddenGrew = revisionReads.count - hiddenBefore
-  check('a hidden tab stops the fast poll', hiddenGrew <= 1, `${hiddenGrew} reads in 700ms`)
-  documentStub.visibilityState = 'visible'
-  documentStub.dispatchEvent(new FakeEvent('visibilitychange'))
-  await realSleep(120)
-  check('coming back to the tab asks again immediately', revisionReads.count > hiddenBefore + hiddenGrew, String(revisionReads.count))
-  view.unmount()
-
-  // (b) A host WITHOUT the counter (a 404): the mascot must keep working, just
-  // on the slow cycle. This is the supported older-host path.
-  // The session starts on the amiya role again: part (a) left the shared
-  // answer on whale-girl, and this check waits for a.png, so it has to be
-  // looking at a session bound to amiya or it waits forever.
-  sessionAnswer = { ok: true, roleId: 'amiya' }
-  resetRequests()
-  const slow = renderComponent(PersonaMascot, { ctx: mkCtx(mkSeat('session-slow').service), t: IDENTITY, onShown: () => {} })
-  await realPoll('the slow mascot mounts on a host without the counter', () => {
-    slow.render()
-    return imageOf(slow.element)?.props?.src?.includes('/a.png') === true
-  }, 8000)
-  sessionAnswer = { ok: true, roleId: 'whale-girl' }
-  await realPoll('a switch still arrives without the counter', () => {
-    slow.render()
-    return paintsSrc(slow.element, '/w.png')
-  }, 9000)
-  check('the fallback path follows the switch too', paintsSrc(slow.element, '/w.png'))
-  slow.unmount()
-}
-
-/* ── 12. A host that is not answering must not be hammered ─────────────── */
-// The role read used to swallow every failure into `null`, so its backoff branch
-// was unreachable: a host that started failing while the fast cadence was live
-// was asked for the session four times a second, indefinitely — and because the
-// cadence came from a captured `fast`, the slow fallback could not engage either.
-//
-// The read has to be driven by the counter to land on the fast cycle at all: with
-// a 404 on /revision this mascot is on the 1500ms fallback, and "it asked twice
-// in two seconds" would be true either way. So the counter is published here and
-// bumped, exactly as a live host does, and the assertion only counts once the
-// fast cycle has actually been observed.
-{
-  bumpRevision()
-  sessionAnswer = { ok: true, roleId: 'amiya' }
-  rolesAnswer = { ok: true, roles: [{ id: 'amiya', name: 'amiya', mascot: { image: '/persona-switcher/mascot-file/a.png', box: '512x768' } }] }
-  resetRequests()
-  const view = renderComponent(PersonaMascot, { ctx: mkCtx(mkSeat('session-down').service), t: IDENTITY, onShown: () => {} })
-  await realPoll('the mascot mounts before the host goes away', () => {
-    view.render()
-    return imageOf(view.element)?.props?.src?.includes('/a.png') === true
-  }, 8000)
-
-  // Drive the counter once, exactly as a `/role` switch does: the role effect
-  // re-runs with the fast cadence and keeps asking on its own from there.
-  resetRequests()
-  sessionAnswer = { ok: true, roleId: 'whale-girl' }
-  bumpRevision()
-  await realPoll('the counter puts the role read on the fast cycle', () => countOf('/session') >= 3, 6000)
-  const fastObserved = countOf('/session') >= 3
-  sessionAnswer = { ok: true, roleId: 'amiya' }
-
-  hostDown = true
-  // "It only asked once" is also what a torn-down loop looks like, so first prove
-  // the chain is alive: this one attempt is the failure that triggers the backoff,
-  // and it happens immediately.
-  const aliveBefore = countOf('/session')
-  await realPoll('the role read is still retrying during the outage', () => countOf('/session') > aliveBefore, 2000)
-  const stillAlive = countOf('/session') > aliveBefore
-  // Measure a fresh window AFTER that first failure. The healthy loop is now on
-  // its 8s retry cycle, so it makes no further attempt here; a loop that ignored
-  // the failure would still be on the 250ms cycle and make ~10.
-  const attemptsBefore = countOf('/session')
-  await realSleep(2500)
-  const attemptsDuring = countOf('/session') - attemptsBefore
-  hostDown = false
-  check(
-    'a dead host is backed off, not hammered',
-    fastObserved && stillAlive && attemptsDuring === 0,
-    `fast=${fastObserved}, alive=${stillAlive}, ${attemptsDuring} retr(ies) in the 2500ms after the first failure`
-  )
-
-  // And it must recover on its own, without a seat change. The failed read left
-  // the loop on the 8s retry cycle, which is inside this timeout.
-  sessionAnswer = { ok: true, roleId: 'whale-girl' }
-  rolesAnswer = { ok: true, roles: [{ id: 'whale-girl', name: 'whale-girl', mascot: { image: '/persona-switcher/mascot-file/w.png', box: '512x768' } }] }
-  await realPoll('the mascot resumes once the host answers again', () => {
-    view.render()
-    return paintsSrc(view.element, '/w.png')
-  }, 12000)
-  check('the polling recovered by itself', paintsSrc(view.element, '/w.png'))
-  view.unmount()
+  await realSleep(30)
+  check('unmount cancels the held request', changeWaiters.size === 0)
 }
 
 /* ── 13. The master switch must react to its own in-window broadcast ───── */
@@ -1594,7 +1434,7 @@ const realSleep = sleep
 {
   storage.delete(SHOWN_KEY)
   noRevisionEndpoint()
-  sessionAnswer = { ok: true, roleId: 'amiya' }
+  sessionAnswer = { ok: true, roleId: 'amiya' }; bumpRevision()
   rolesAnswer = { ok: true, roles: [{ id: 'amiya', name: 'amiya', mascot: { image: '/persona-switcher/mascot-file/a.png', box: '512x768' } }] }
   resetRequests()
   const view = renderComponent(MascotGate, { ctx: mkCtx(mkSeat('session-switch').service), t: IDENTITY, onShown: () => {} })
@@ -1676,7 +1516,7 @@ const realSleep = sleep
   storage.delete(SHOWN_KEY)
   reducedMotion.matches = false
   noRevisionEndpoint()
-  sessionAnswer = { ok: true, roleId: 'amiya' }
+  sessionAnswer = { ok: true, roleId: 'amiya' }; bumpRevision()
   rolesAnswer = flipRoles()
   resetRequests()
   const first = renderComponent(PersonaMascot, { ctx: mkCtx(mkSeat('session-flip').service), t: IDENTITY, onShown: () => {} })
@@ -1690,7 +1530,7 @@ const realSleep = sleep
   check('and the box is not marked flipping', !String(layerOf(first.element).props.className).includes('is-flipping'))
 
   /* 14c. A replacement turns: two faces, old front, new back, box sized to new. */
-  sessionAnswer = { ok: true, roleId: 'whale-girl' }
+  sessionAnswer = { ok: true, roleId: 'whale-girl' }; bumpRevision()
   await realPoll('the replacement starts a turn', () => {
     first.render()
     return divWithClass(first.element, 'ps-mascot__card') !== undefined
@@ -1716,7 +1556,7 @@ const realSleep = sleep
 
   /* 14e. A turn that loses its animationend still commits (fallback timer). */
   rolesAnswer = flipRoles()
-  sessionAnswer = { ok: true, roleId: 'amiya' }
+  sessionAnswer = { ok: true, roleId: 'amiya' }; bumpRevision()
   await realPoll('the reverse turn starts', () => {
     first.render()
     return divWithClass(first.element, 'ps-mascot__card') !== undefined
@@ -1731,14 +1571,14 @@ const realSleep = sleep
 
   /* 14f. Reduced motion: the same replacement swaps in place, no card. */
   reducedMotion.matches = true
-  sessionAnswer = { ok: true, roleId: 'amiya' }
+  sessionAnswer = { ok: true, roleId: 'amiya' }; bumpRevision()
   rolesAnswer = flipRoles()
   const reduce = renderComponent(PersonaMascot, { ctx: mkCtx(mkSeat('session-reduce').service), t: IDENTITY, onShown: () => {} })
   await realPoll('the reduce-mode mascot shows the first art', () => {
     reduce.render()
     return paintsSrc(reduce.element, '/a.png')
   }, 8000)
-  sessionAnswer = { ok: true, roleId: 'whale-girl' }
+  sessionAnswer = { ok: true, roleId: 'whale-girl' }; bumpRevision()
   await realPoll('a replacement under reduce swaps in place', () => {
     reduce.render()
     return paintsSrc(reduce.element, '/w.png')
@@ -1757,14 +1597,14 @@ const realSleep = sleep
   // 'never' — the swap must be in place.
   storage.set(MOTION_KEY, 'always')
   reducedMotion.matches = true
-  sessionAnswer = { ok: true, roleId: 'amiya' }
+  sessionAnswer = { ok: true, roleId: 'amiya' }; bumpRevision()
   rolesAnswer = flipRoles()
   const forced = renderComponent(PersonaMascot, { ctx: mkCtx(mkSeat('session-forced').service), t: IDENTITY, onShown: () => {} })
   await realPoll("'always' mounts the first art under system reduce", () => {
     forced.render()
     return paintsSrc(forced.element, '/a.png')
   }, 8000)
-  sessionAnswer = { ok: true, roleId: 'whale-girl' }
+  sessionAnswer = { ok: true, roleId: 'whale-girl' }; bumpRevision()
   await realPoll("'always' turns even though the system reports reduce", () => {
     forced.render()
     return divWithClass(forced.element, 'ps-mascot__card') !== undefined
@@ -1775,13 +1615,13 @@ const realSleep = sleep
 
   storage.set(MOTION_KEY, 'never')
   reducedMotion.matches = false
-  sessionAnswer = { ok: true, roleId: 'amiya' }
+  sessionAnswer = { ok: true, roleId: 'amiya' }; bumpRevision()
   const silenced = renderComponent(PersonaMascot, { ctx: mkCtx(mkSeat('session-silenced').service), t: IDENTITY, onShown: () => {} })
   await realPoll("'never' mounts the first art with the system allowing animation", () => {
     silenced.render()
     return paintsSrc(silenced.element, '/a.png')
   }, 8000)
-  sessionAnswer = { ok: true, roleId: 'whale-girl' }
+  sessionAnswer = { ok: true, roleId: 'whale-girl' }; bumpRevision()
   await realPoll("'never' swaps in place even though the system allows animation", () => {
     silenced.render()
     return paintsSrc(silenced.element, '/w.png')

@@ -2,6 +2,7 @@ import { useEffect, useRef, useState } from 'react'
 import { createPortal } from 'react-dom'
 import { loadOptions, loadSessionRole, selectRole } from './role-picker.js'
 import { fishVoice } from './fish-voice.js'
+import { subscribePersonaChanges } from './changes.js'
 
 /** First unused suggestion; the settings editor still lets the user change it. */
 export const nextRoleId = (roles) => {
@@ -71,58 +72,36 @@ export function ComposerPicker({ sessionId, api, t, sessions, openLibrary }) {
   useEffect(() => {
     let cancelled = false
     let inFlight = false
-    let timer
-    let lastRevision
-    let lastRead = 0
+    let queued = false
+    let retry
     let lastVoiceKey
-    const refresh = async (force = false) => {
-      if (cancelled || inFlight) return
-      clearTimeout(timer)
-      inFlight = true
-      let delay = 1500
+    const refresh = async () => {
+      if (cancelled || document.visibilityState === 'hidden') return
+      if (inFlight) { queued = true; return }
+      clearTimeout(retry); inFlight = true
       try {
-        if (document.visibilityState === 'hidden') return
-        // Changes through /role do not emit a client event. The cheap counter
-        // avoids fetching persona prose every tick. Periodic full reads also
-        // notice renamed role files and support hosts without /revision.
-        const revision = await api('GET', '/revision').then((value) => value?.revision, () => undefined)
-        if (force || revision === undefined || revision !== lastRevision || Date.now() - lastRead >= 15000) {
-          const role = await loadSessionRole(sessionId, api)
-          if (cancelled) return
-          setRoleLabel(role === null ? null : role.name?.trim() || role.id)
-          const voiceKey = JSON.stringify([role?.id, role?.voiceId])
-          if ((force || voiceKey !== lastVoiceKey) && trigger.current?.getClientRects().length) {
-            try {
-              await fishVoice.sync(role?.voiceId, () => !cancelled && !pending.current && document.visibilityState !== 'hidden')
-              if (!cancelled) { lastVoiceKey = voiceKey; setVoiceError('') }
-            } catch (reason) {
-              if (!cancelled) setVoiceError(`人格已生效，音色未同步：${reason.message}`)
-            }
+        const role = await loadSessionRole(sessionId, api)
+        if (cancelled) return
+        setRoleLabel(role === null ? null : role.name?.trim() || role.id)
+        const voiceKey = JSON.stringify([role?.id, role?.voiceId])
+        if (voiceKey !== lastVoiceKey && trigger.current?.getClientRects().length) {
+          try {
+            await fishVoice.sync(role?.voiceId, () => !cancelled && !pending.current && document.visibilityState !== 'hidden')
+            if (!cancelled) { lastVoiceKey = voiceKey; setVoiceError('') }
+          } catch (reason) {
+            if (!cancelled) setVoiceError(`人格已生效，音色未同步：${reason.message}`)
           }
-          lastRead = Date.now()
-          lastRevision = revision
         }
-        if (revision === undefined) delay = 5000
       } catch {
-        // Keep the last confirmed label during a transient host failure.
-        delay = 5000
+        if (!cancelled) retry = setTimeout(() => void refresh(), 15000)
       } finally {
         inFlight = false
-        if (!cancelled) timer = setTimeout(() => void refresh(), delay)
+        if (queued && !cancelled) { queued = false; void refresh() }
       }
     }
-    const onFocus = () => { void refresh(true) }
-    void refresh(true)
-    window.addEventListener('focus', onFocus)
-    window.addEventListener('persona-switcher:voice-changed', onFocus)
-    document.addEventListener('visibilitychange', onFocus)
-    return () => {
-      cancelled = true
-      clearTimeout(timer)
-      window.removeEventListener('focus', onFocus)
-      window.removeEventListener('persona-switcher:voice-changed', onFocus)
-      document.removeEventListener('visibilitychange', onFocus)
-    }
+    const stop = subscribePersonaChanges(() => void refresh())
+    void refresh()
+    return () => { cancelled = true; clearTimeout(retry); stop() }
   }, [sessionId, api, labelRefresh])
 
   useEffect(() => {
