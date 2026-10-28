@@ -1,6 +1,16 @@
 # 人设切换 · Toy 分支 v0.3.1-toy.13
 
-基于 [yupaoa/dsh-persona-switcher](https://github.com/yupaoa/dsh-persona-switcher) 主分支 `563854472ae7fe3b2e96f6cbcb53428d3af81e1c`（`0.3.1`）继续修改，保留原包名 `dsh-persona-switcher`、原作者署名及 MIT 许可。
+基于 [yupaoa/dsh-persona-switcher](https://github.com/yupaoa/dsh-persona-switcher) 主分支 `0.3.1` 继续修改。
+
+## 兼容与安装
+
+DSH 建议测试版 **`0.2.1-rc.3-22ddee3`**或更高；表情兼容针对 **dsh-meme `0.1.64`**。
+
+下载附件 `dsh-persona-switcher-0.3.1-toy.13.tgz`，在 DSH 插件页通过本地安装包入口安装并重启。也可使用命令（把 `desktop` 换成实际 profile）：
+
+```sh
+dsh plugin --profile desktop add "https://github.com/Oblivious0214/dsh-toy-persona/releases/download/v0.3.1-toy.13/dsh-persona-switcher-0.3.1-toy.13.tgz"
+```
 
 ## 本版功能
 
@@ -13,19 +23,6 @@
 
 人设切换保留模型、工具和权限。表情频率是模型提示，不是按概率或轮数强制限流。Fish 音色同步使用原插件的全局默认音色，多窗口同时合成不保证音色隔离；试听会调用已配置的 Fish 服务。常规、诊断及立绘编辑入口暂时隐藏，已有数据保留。详见 [媒体说明](docs/media-integration.md) 和 [更新记录](CHANGELOG.md)。
 
-## 兼容与安装
-
-仅验证 DSH 测试版 **`0.2.1-rc.3-22ddee3`**；表情兼容针对 **dsh-meme `0.1.64`**。这是 Toy 维护分支的预发布版本，版本规则为 `上游主分支版本-toy.修订号`，同基础的 Toy 修订号递增。
-
-下载附件 `dsh-persona-switcher-0.3.1-toy.13.tgz`，按 `SHA256SUMS.txt` 核对后，在 DSH 插件页通过本地安装包入口安装并重启。也可使用命令（把 `desktop` 换成实际 profile）：
-
-```sh
-dsh plugin --profile desktop add "https://github.com/Oblivious0214/dsh-toy-persona/releases/download/v0.3.1-toy.13/dsh-persona-switcher-0.3.1-toy.13.tgz"
-```
-
-从 `dsh-toy-persona` 升级前，请备份 profile 配置、角色库和会话绑定，保留 `persona-switcher` 配置键及原角色数据目录，停用旧包后安装本版，避免重复加载。工作区迁移工具不随公开包提供。
-
-Fish TTS、dsh-meme 和 QQ 界面均为可选配套插件，不包含在本附件中。未安装媒体插件时仍可切换人设。请使用 `.tgz` 安装，GitHub 自动生成的源码 ZIP 不作为安装包；不向 npm 发布同名包。
 
 ## 验证与致谢
 
