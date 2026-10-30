@@ -1,3 +1,9 @@
+> **本仓库已退役（2026-10-30）**
+>
+> 原独立分段、QQ 界面和人设功能已整合到 [dsh-qqbot](https://github.com/Oblivious0214/dsh-qqbot)。
+> 新安装请使用 [DSH 养鱼部署入口](https://github.com/Oblivious0214/dsh-fish-deploy)；设备联动继续由 [dsh-toy-buttplug](https://github.com/Oblivious0214/dsh-toy-buttplug) 提供。
+> 本仓库仅保留历史、原作者声明和旧 Release 下载，不再维护。新版不自动导入旧插件数据。
+
 # dsh-persona-switcher
 
 [![CI](https://github.com/yupaoa/dsh-persona-switcher/actions/workflows/ci.yml/badge.svg)](https://github.com/yupaoa/dsh-persona-switcher/actions/workflows/ci.yml)
