@@ -1,3 +1,9 @@
+> **本仓库已退役（2026-10-30）**
+>
+> 原独立分段、QQ 界面和人设功能已整合到 [dsh-qqbot](https://github.com/Oblivious0214/dsh-qqbot)。
+> 新安装请使用 [DSH 养鱼部署入口](https://github.com/Oblivious0214/dsh-fish-deploy)；设备联动继续由 [dsh-toy-buttplug](https://github.com/Oblivious0214/dsh-toy-buttplug) 提供。
+> 本仓库仅保留历史、原作者声明和旧 Release 下载，不再维护。新版不自动导入旧插件数据。
+
 # 人设切换
 
 > 0.3.1-toy.14：性能修订。人设选择器共用一条可取消的变更等待请求，取代固定间隔读取；隐藏页面与卸载时停止请求。后端无变化时最多等待 25 秒后续接，不重复读取角色库。旧宿主不支持该接口时降为 30 秒兜底。当前立绘模块仍不默认挂载，其历史轮询也一并移除。安装包见下方 GitHub 预发布附件。
